@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+trading_venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Dash / local app artifacts
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# Data files you may not want to commit
+data/sample/*.csv
+
+# OS / misc
+Thumbs.db
