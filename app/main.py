@@ -4,12 +4,14 @@ from app.views.upload import get_upload_layout, register_upload_callbacks
 
 
 app = Dash(__name__, suppress_callback_exceptions=True)
-app.title = "IMC Prosperity 4 Dashboard"
+app.title = "IMC Prosperity Dashboard"
 
 app.layout = html.Div(
     [
-        html.H1("IMC Prosperity 4 Dashboard"),
-        html.P("Upload IMC CSV files to build an ingestion session summary."),
+        html.H1("IMC Prosperity Dashboard"),
+        html.P(
+            "Upload IMC CSV files to explore the market, compare products, and run round-specific analysis."
+        ),
         get_upload_layout(),
     ],
     style={
