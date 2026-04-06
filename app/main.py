@@ -10,12 +10,12 @@ app.layout = html.Div(
     [
         html.H1("IMC Prosperity Dashboard"),
         html.P(
-            "Upload IMC CSV files to explore the market, compare products, and run round-specific analysis."
+            "Upload IMC CSV files to explore the market, compare products, run round-specific analysis, and backtest your trader files."
         ),
         get_upload_layout(),
     ],
     style={
-        "maxWidth": "1400px",
+        "maxWidth": "1500px",
         "margin": "0 auto",
         "padding": "24px",
         "fontFamily": "Arial, sans-serif",

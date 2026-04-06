@@ -10,6 +10,7 @@ from dash.exceptions import PreventUpdate
 
 from app.ingestion.session_builder import build_session
 from app.rounds.registry import get_round_plugin
+from app.views.backtester import build_backtester_layout, register_backtester_callbacks
 from app.views.market_overview import (
     build_market_overview_graphs_layout,
     build_shared_market_controls_layout,
@@ -56,23 +57,47 @@ def get_upload_layout():
             ),
             html.Div(id="upload-status", style={"marginBottom": "16px"}),
             html.Div(id="session-summary-container"),
-            html.Div(id="shared-market-controls-container", style={"marginTop": "20px"}),
-            dcc.Tabs(
-                id="analysis-tabs",
-                value="overview",
-                children=[
-                    dcc.Tab(
-                        label="Overview",
-                        value="overview",
-                        children=[html.Div(id="market-overview-container")],
-                    ),
-                    dcc.Tab(
-                        label="Round Analysis",
-                        value="round-analysis",
-                        children=[html.Div(id="round-analysis-container")],
-                    ),
-                ],
+            html.Div(
+                build_shared_market_controls_layout(),
+                id="shared-market-controls-container",
+                style={"marginTop": "20px"},
             ),
+            dcc.Tabs(
+            id="analysis-tabs",
+            value="overview",
+            children=[
+                dcc.Tab(
+                    label="Overview",
+                    value="overview",
+                    children=[
+                        html.Div(
+                            build_market_overview_graphs_layout(),
+                            id="market-overview-container",
+                        )
+                    ],
+                ),
+                dcc.Tab(
+                    label="Round Analysis",
+                    value="round-analysis",
+                    children=[
+                        html.Div(
+                            html.Div("Upload files to enable round-specific analysis."),
+                            id="round-analysis-container",
+                        )
+                    ],
+                ),
+                dcc.Tab(
+                    label="Backtester",
+                    value="backtester",
+                    children=[
+                        html.Div(
+                            build_backtester_layout(),
+                            id="backtester-container",
+                        )
+                    ],
+                ),
+            ],
+        ),
         ]
     )
 
@@ -414,6 +439,8 @@ def register_upload_callbacks(app):
             raise PreventUpdate
 
         return dcc.send_data_frame(trades_df.to_csv, "filtered_trades.csv", index=False)
+
+    register_backtester_callbacks(app)
 
 
 def filter_selected_data(
