@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
-from dash import Input, Output, State, dcc, html, no_update
+from dash import Input, Output, State, dcc, html, no_update, ctx
 from dash.exceptions import PreventUpdate
 
 from app.ingestion.session_builder import build_session
@@ -28,6 +28,12 @@ from app.views.market_overview import (
     make_trade_volume_figure,
 )
 from app.views.session_summary import build_session_summary_components
+from app.views.trades import (
+    build_nancy_pelosi_identifier_components,
+    build_nancy_pelosi_identifier_layout,
+    make_selected_events_figure,
+    _add_extrema_features,
+)
 
 
 def get_upload_layout():
@@ -63,41 +69,51 @@ def get_upload_layout():
                 style={"marginTop": "20px"},
             ),
             dcc.Tabs(
-            id="analysis-tabs",
-            value="overview",
-            children=[
-                dcc.Tab(
-                    label="Overview",
-                    value="overview",
-                    children=[
-                        html.Div(
-                            build_market_overview_graphs_layout(),
-                            id="market-overview-container",
-                        )
-                    ],
-                ),
-                dcc.Tab(
-                    label="Round Analysis",
-                    value="round-analysis",
-                    children=[
-                        html.Div(
-                            html.Div("Upload files to enable round-specific analysis."),
-                            id="round-analysis-container",
-                        )
-                    ],
-                ),
-                dcc.Tab(
-                    label="Backtester",
-                    value="backtester",
-                    children=[
-                        html.Div(
-                            build_backtester_layout(),
-                            id="backtester-container",
-                        )
-                    ],
-                ),
-            ],
-        ),
+                id="analysis-tabs",
+                value="overview",
+                children=[
+                    dcc.Tab(
+                        label="Overview",
+                        value="overview",
+                        children=[
+                            html.Div(
+                                build_market_overview_graphs_layout(),
+                                id="market-overview-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Round Analysis",
+                        value="round-analysis",
+                        children=[
+                            html.Div(
+                                html.Div("Upload files to enable round-specific analysis."),
+                                id="round-analysis-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Nancy Pelosi Identifier",
+                        value="nancy-pelosi-identifier",
+                        children=[
+                            html.Div(
+                                build_nancy_pelosi_identifier_layout(),
+                                id="nancy-pelosi-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Backtester",
+                        value="backtester",
+                        children=[
+                            html.Div(
+                                build_backtester_layout(),
+                                id="backtester-container",
+                            )
+                        ],
+                    ),
+                ],
+            ),
         ]
     )
 
@@ -155,14 +171,25 @@ def register_upload_callbacks(app):
                 )
 
                 store_data = {
-                    "prices": session.prices_df.to_dict("records") if not session.prices_df.empty else [],
-                    "trades": session.trades_df.to_dict("records") if not session.trades_df.empty else [],
+                    "prices": session.prices_df.to_dict("records")
+                    if not session.prices_df.empty
+                    else [],
+                    "trades": session.trades_df.to_dict("records")
+                    if not session.trades_df.empty
+                    else [],
                     "available_rounds": session.available_rounds,
                     "available_days": session.available_days,
                     "available_products": session.available_products,
                 }
 
-                return status, summary, controls_layout, overview_layout, round_layout, store_data
+                return (
+                    status,
+                    summary,
+                    controls_layout,
+                    overview_layout,
+                    round_layout,
+                    store_data,
+                )
 
         except Exception as e:
             error_box = html.Div(
@@ -209,12 +236,16 @@ def register_upload_callbacks(app):
         rounds = sorted(
             set(
                 (
-                    prices_df.loc[prices_df["product"] == selected_product, "round"].dropna().astype(int).tolist()
+                    prices_df.loc[
+                        prices_df["product"] == selected_product, "round"
+                    ].dropna().astype(int).tolist()
                     if "product" in prices_df.columns and "round" in prices_df.columns
                     else []
                 )
                 + (
-                    trades_df.loc[trades_df["product"] == selected_product, "round"].dropna().astype(int).tolist()
+                    trades_df.loc[
+                        trades_df["product"] == selected_product, "round"
+                    ].dropna().astype(int).tolist()
                     if "product" in trades_df.columns and "round" in trades_df.columns
                     else []
                 )
@@ -236,7 +267,9 @@ def register_upload_callbacks(app):
         State("compare-days-toggle", "value"),
         prevent_initial_call=True,
     )
-    def populate_day_dropdown_and_slider(store_data, selected_product, selected_round, compare_days_value):
+    def populate_day_dropdown_and_slider(
+        store_data, selected_product, selected_round, compare_days_value
+    ):
         if not store_data or not selected_product or selected_round is None:
             return [], None, 0, 1, [0, 1]
 
@@ -264,12 +297,18 @@ def register_upload_callbacks(app):
         day_options = [{"label": str(d), "value": d} for d in days]
         day_value = None if compare_days else (days[0] if days else None)
 
-        combined = pd.concat([prices_df, trades_df], ignore_index=True) if (not prices_df.empty or not trades_df.empty) else pd.DataFrame()
+        combined = (
+            pd.concat([prices_df, trades_df], ignore_index=True)
+            if (not prices_df.empty or not trades_df.empty)
+            else pd.DataFrame()
+        )
+
         if not combined.empty and {"product", "round", "timestamp"}.issubset(combined.columns):
             combined = combined[
                 (combined["product"] == selected_product)
                 & (combined["round"] == selected_round)
             ]
+
             if not compare_days and day_value is not None and "day" in combined.columns:
                 combined = combined[combined["day"] == day_value]
 
@@ -303,7 +342,15 @@ def register_upload_callbacks(app):
         Input("timestamp-range-slider", "value"),
         prevent_initial_call=True,
     )
-    def update_market_graphs(store_data, selected_product, selected_round, selected_day, compare_days_value, compare_products, timestamp_range):
+    def update_market_graphs(
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+    ):
         if not store_data or not selected_product or selected_round is None:
             return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 
@@ -381,6 +428,172 @@ def register_upload_callbacks(app):
         )
 
     @app.callback(
+        Output("nancy-summary-cards", "children"),
+        Output("nancy-extrema-graph", "figure"),
+        Output("nancy-fingerprint-graph", "figure"),
+        Output("nancy-forward-graph", "figure"),
+        Output("nancy-fingerprint-table-container", "children"),
+        Output("nancy-flagged-grid", "columnDefs"),
+        Output("nancy-flagged-grid", "rowData"),
+        Output("nancy-flagged-grid-help", "children"),
+        Input("session-data-store", "data"),
+        Input("product-dropdown", "value"),
+        Input("round-dropdown", "value"),
+        Input("day-dropdown", "value"),
+        Input("compare-days-toggle", "value"),
+        Input("compare-product-dropdown", "value"),
+        Input("timestamp-range-slider", "value"),
+        prevent_initial_call=True,
+    )
+    def update_nancy_pelosi_identifier(
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+    ):
+        if not store_data or selected_round is None or not selected_product:
+            return html.Div(), {}, {}, {}, html.Div(), [], [], ""
+
+        prices_df, trades_df, _, _ = filter_selected_data(
+            store_data,
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            compare_products,
+            timestamp_range,
+        )
+        prices_df, trades_df = enrich_market_data(prices_df, trades_df)
+
+        return build_nancy_pelosi_identifier_components(prices_df, trades_df)
+
+    @app.callback(
+        Output("nancy-extra-events-store", "data"),
+        Output("nancy-overlay-status", "children"),
+        Input("nancy-add-same-qty-btn", "n_clicks"),
+        Input("nancy-remove-same-qty-btn", "n_clicks"),
+        Input("nancy-clear-extra-events-btn", "n_clicks"),
+        State("nancy-flagged-grid", "selectedRows"),
+        State("nancy-flagged-grid", "rowData"),
+        State("nancy-extra-events-store", "data"),
+        prevent_initial_call=True,
+    )
+    def manage_nancy_extra_events(
+        add_clicks,
+        remove_clicks,
+        clear_clicks,
+        selected_rows,
+        all_rows,
+        current_extra,
+    ):
+        trigger = ctx.triggered_id
+
+        selected_df = pd.DataFrame(selected_rows or [])
+        all_df = pd.DataFrame(all_rows or [])
+        extra_df = pd.DataFrame(current_extra or [])
+
+        if trigger == "nancy-clear-extra-events-btn":
+            return [], "Cleared added quantity groups."
+
+        if selected_df.empty:
+            return current_extra or [], "Select one or more rows first."
+
+        if "quantity" not in selected_df.columns or all_df.empty:
+            return current_extra or [], "No quantity data available."
+
+        selected_qty = pd.to_numeric(
+            selected_df["quantity"], errors="coerce"
+        ).dropna().unique().tolist()
+
+        if not selected_qty:
+            return current_extra or [], "No valid quantities in selected rows."
+
+        all_df["quantity_num"] = pd.to_numeric(all_df["quantity"], errors="coerce")
+        matching = all_df[all_df["quantity_num"].isin(selected_qty)].drop(
+            columns=["quantity_num"], errors="ignore"
+        ).copy()
+
+        if trigger == "nancy-add-same-qty-btn":
+            combined = pd.concat([extra_df, matching], ignore_index=True)
+            if "event_key" in combined.columns:
+                combined = combined.drop_duplicates(subset=["event_key"])
+
+            return (
+                combined.to_dict("records"),
+                f"Added all events with quantities: {', '.join(map(lambda x: str(int(x)) if float(x).is_integer() else str(x), selected_qty))}",
+            )
+
+        if trigger == "nancy-remove-same-qty-btn":
+            if extra_df.empty:
+                return [], "No added quantity groups to remove."
+
+            extra_df["quantity_num"] = pd.to_numeric(extra_df["quantity"], errors="coerce")
+            extra_df = extra_df[~extra_df["quantity_num"].isin(selected_qty)].drop(
+                columns=["quantity_num"], errors="ignore"
+            )
+
+            return (
+                extra_df.to_dict("records"),
+                f"Removed added groups with quantities: {', '.join(map(lambda x: str(int(x)) if float(x).is_integer() else str(x), selected_qty))}",
+            )
+
+        return current_extra or [], no_update
+
+    @app.callback(
+        Output("nancy-selected-events-graph", "figure"),
+        Input("session-data-store", "data"),
+        Input("product-dropdown", "value"),
+        Input("round-dropdown", "value"),
+        Input("day-dropdown", "value"),
+        Input("compare-days-toggle", "value"),
+        Input("compare-product-dropdown", "value"),
+        Input("timestamp-range-slider", "value"),
+        Input("nancy-flagged-grid", "selectedRows"),
+        Input("nancy-extra-events-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_selected_nancy_events(
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+        selected_rows,
+        extra_rows,
+    ):
+        if not store_data or selected_round is None or not selected_product:
+            return {}
+
+        prices_df, trades_df, _, _ = filter_selected_data(
+            store_data,
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            compare_products,
+            timestamp_range,
+        )
+        prices_df, trades_df = enrich_market_data(prices_df, trades_df)
+        prices_df = _add_extrema_features(prices_df)
+
+        selected_df = pd.DataFrame(selected_rows or [])
+        extra_df = pd.DataFrame(extra_rows or [])
+
+        if selected_df.empty and extra_df.empty:
+            return make_selected_events_figure(prices_df, [])
+
+        combined = pd.concat([selected_df, extra_df], ignore_index=True)
+        if "event_key" in combined.columns:
+            combined = combined.drop_duplicates(subset=["event_key"])
+
+        return make_selected_events_figure(prices_df, combined.to_dict("records"))
+
+    @app.callback(
         Output("download-prices", "data"),
         Input("download-prices-btn", "n_clicks"),
         State("session-data-store", "data"),
@@ -392,7 +605,16 @@ def register_upload_callbacks(app):
         State("timestamp-range-slider", "value"),
         prevent_initial_call=True,
     )
-    def download_filtered_prices(n_clicks, store_data, selected_product, selected_round, selected_day, compare_days_value, compare_products, timestamp_range):
+    def download_filtered_prices(
+        n_clicks,
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+    ):
         if not n_clicks or not store_data:
             raise PreventUpdate
 
@@ -405,6 +627,7 @@ def register_upload_callbacks(app):
             compare_products,
             timestamp_range,
         )
+
         if prices_df.empty:
             raise PreventUpdate
 
@@ -422,7 +645,16 @@ def register_upload_callbacks(app):
         State("timestamp-range-slider", "value"),
         prevent_initial_call=True,
     )
-    def download_filtered_trades(n_clicks, store_data, selected_product, selected_round, selected_day, compare_days_value, compare_products, timestamp_range):
+    def download_filtered_trades(
+        n_clicks,
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+    ):
         if not n_clicks or not store_data:
             raise PreventUpdate
 
@@ -435,6 +667,7 @@ def register_upload_callbacks(app):
             compare_products,
             timestamp_range,
         )
+
         if trades_df.empty:
             raise PreventUpdate
 
@@ -475,14 +708,20 @@ def filter_selected_data(
         if not compare_days and selected_day is not None:
             trades_df = trades_df[trades_df["day"] == selected_day]
         elif compare_days:
-            trades_df = pd.DataFrame()
+            pass
 
     if timestamp_range and len(timestamp_range) == 2:
         t0, t1 = timestamp_range
+
         if not prices_df.empty:
-            prices_df = prices_df[(prices_df["timestamp"] >= t0) & (prices_df["timestamp"] <= t1)]
+            prices_df = prices_df[
+                (prices_df["timestamp"] >= t0) & (prices_df["timestamp"] <= t1)
+            ]
+
         if not trades_df.empty:
-            trades_df = trades_df[(trades_df["timestamp"] >= t0) & (trades_df["timestamp"] <= t1)]
+            trades_df = trades_df[
+                (trades_df["timestamp"] >= t0) & (trades_df["timestamp"] <= t1)
+            ]
 
     cross_df = pd.DataFrame()
     if not all_prices_df.empty:
@@ -491,11 +730,15 @@ def filter_selected_data(
             (all_prices_df["product"].isin(compare_set))
             & (all_prices_df["round"] == selected_round)
         ]
+
         if not compare_days and selected_day is not None:
             cross_df = cross_df[cross_df["day"] == selected_day]
+
         if timestamp_range and len(timestamp_range) == 2:
             t0, t1 = timestamp_range
-            cross_df = cross_df[(cross_df["timestamp"] >= t0) & (cross_df["timestamp"] <= t1)]
+            cross_df = cross_df[
+                (cross_df["timestamp"] >= t0) & (cross_df["timestamp"] <= t1)
+            ]
 
     return prices_df, trades_df, cross_df, compare_days
 
