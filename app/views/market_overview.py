@@ -152,6 +152,17 @@ def build_market_overview_graphs_layout():
             dcc.Graph(id="book-heatmap-graph"),
             dcc.Graph(id="trade-size-histogram-graph"),
             dcc.Graph(id="cross-product-graph"),
+            html.Div(
+                [
+                    html.H3("Random Walk Diagnostics"),
+                    html.P(
+                        "Statistical checks on the filtered mid-price series. Treat this as evidence, not a hard yes/no oracle."
+                    ),
+                    html.Div(id="random-walk-summary-cards", style={"marginBottom": "16px"}),
+                    dcc.Graph(id="random-walk-diagnostics-graph"),
+                ],
+                style={"marginTop": "16px"},
+            ),
         ]
     )
 

@@ -27,6 +27,10 @@ from app.views.market_overview import (
     make_trade_size_histogram_figure,
     make_trade_volume_figure,
 )
+from app.views.random_walk import (
+    build_random_walk_summary_cards,
+    make_random_walk_diagnostics_figure,
+)
 from app.views.session_summary import build_session_summary_components
 from app.views.trades import (
     build_nancy_pelosi_identifier_components,
@@ -333,6 +337,8 @@ def register_upload_callbacks(app):
         Output("book-heatmap-graph", "figure"),
         Output("trade-size-histogram-graph", "figure"),
         Output("cross-product-graph", "figure"),
+        Output("random-walk-summary-cards", "children"),
+        Output("random-walk-diagnostics-graph", "figure"),
         Input("session-data-store", "data"),
         Input("product-dropdown", "value"),
         Input("round-dropdown", "value"),
@@ -352,7 +358,22 @@ def register_upload_callbacks(app):
         timestamp_range,
     ):
         if not store_data or not selected_product or selected_round is None:
-            return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+            empty_fig = {}
+            return (
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                html.Div(),
+                empty_fig,
+            )
 
         prices_df, trades_df, cross_df, compare_days = filter_selected_data(
             store_data,
@@ -379,6 +400,8 @@ def register_upload_callbacks(app):
             make_book_heatmap_figure(prices_df),
             make_trade_size_histogram_figure(trades_df),
             make_cross_product_figure(cross_df, selected_product, compare_products or []),
+            build_random_walk_summary_cards(prices_df),
+            make_random_walk_diagnostics_figure(prices_df),
         )
 
     @app.callback(
