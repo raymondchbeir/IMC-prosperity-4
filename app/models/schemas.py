@@ -30,6 +30,7 @@ class BacktestPayload:
     targets: list[BacktestTarget]
     activity_rows: list[dict[str, Any]]
     submission_trade_rows: list[dict[str, Any]]
+    realized_trade_rows: list[dict[str, Any]]
     sandbox_rows: list[dict[str, Any]]
     per_run_rows: list[dict[str, Any]]
     per_product_rows: list[dict[str, Any]]

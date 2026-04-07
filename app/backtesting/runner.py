@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any
 from uuid import uuid4
 
+import numpy as np
 import pandas as pd
 
 from app.config import BACKTEST_DAY_SCAN_RANGE, BACKTESTER_INSTALL_HINT
@@ -245,6 +246,12 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
             data["run_label"] = f"R{result.round_num} D{result.day_num}"
             data["run_index"] = run_index
             data["global_step"] = timestamp_to_step[row.timestamp]
+            bid = data.get("bid_price_1")
+            ask = data.get("ask_price_1")
+            if pd.notna(bid) and pd.notna(ask):
+                data["spread"] = ask - bid
+            else:
+                data["spread"] = np.nan
             rows.append(data)
 
         global_step_offset += len(timestamps)
@@ -261,12 +268,37 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
 def _submission_trades_to_df(results: list[Any], activity_df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     step_lookup: dict[tuple[int, int, int], int] = {}
+    snapshot_lookup: dict[tuple[int, int, int, str], dict[str, Any]] = {}
+
     if not activity_df.empty:
         step_lookup = {
             (int(row["round"]), int(row["run_day"]), int(row["timestamp"])): int(row["global_step"])
             for _, row in activity_df[["round", "run_day", "timestamp", "global_step"]].drop_duplicates().iterrows()
         }
 
+        snapshot_cols = [
+            "round",
+            "run_day",
+            "timestamp",
+            "product",
+            "bid_price_1",
+            "ask_price_1",
+            "mid_price",
+            "spread",
+            "profit_loss",
+        ]
+        for _, row in activity_df[snapshot_cols].drop_duplicates(subset=["round", "run_day", "timestamp", "product"]).iterrows():
+            snapshot_lookup[
+                (int(row["round"]), int(row["run_day"]), int(row["timestamp"]), str(row["product"]))
+            ] = {
+                "bid_price_1": row.get("bid_price_1"),
+                "ask_price_1": row.get("ask_price_1"),
+                "mid_price": row.get("mid_price"),
+                "spread": row.get("spread"),
+                "profit_loss": row.get("profit_loss"),
+            }
+
+    fill_index = 0
     for result in results:
         for trade_row in result.trades:
             trade = trade_row.trade
@@ -279,8 +311,14 @@ def _submission_trades_to_df(results: list[Any], activity_df: pd.DataFrame) -> p
             else:
                 continue
 
+            snapshot = snapshot_lookup.get(
+                (result.round_num, result.day_num, int(trade.timestamp), str(trade.symbol)),
+                {},
+            )
+
             rows.append(
                 {
+                    "fill_id": fill_index,
                     "round": result.round_num,
                     "day": result.day_num,
                     "run_label": f"R{result.round_num} D{result.day_num}",
@@ -294,14 +332,20 @@ def _submission_trades_to_df(results: list[Any], activity_df: pd.DataFrame) -> p
                     "buyer": trade.buyer,
                     "seller": trade.seller,
                     "global_step": step_lookup.get((result.round_num, result.day_num, int(trade.timestamp))),
+                    "bid_price_1": snapshot.get("bid_price_1"),
+                    "ask_price_1": snapshot.get("ask_price_1"),
+                    "mid_price": snapshot.get("mid_price"),
+                    "spread": snapshot.get("spread"),
+                    "mtm_profit_loss": snapshot.get("profit_loss"),
                 }
             )
+            fill_index += 1
 
     df = pd.DataFrame(rows)
     if df.empty:
         return df
 
-    df = df.sort_values(["round", "day", "timestamp", "product", "side"]).reset_index(drop=True)
+    df = df.sort_values(["round", "day", "timestamp", "product", "fill_id"]).reset_index(drop=True)
     df["position_after_trade"] = df.groupby(["round", "day", "product"])["signed_quantity"].cumsum()
     df["gross_notional"] = df["price"] * df["quantity"]
     return df
@@ -324,7 +368,170 @@ def _sandbox_logs_to_df(results: list[Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_summary(activity_df: pd.DataFrame, submission_trades_df: pd.DataFrame, targets: list[BacktestTarget]) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
+def _realized_trades_to_df(submission_trades_df: pd.DataFrame) -> pd.DataFrame:
+    if submission_trades_df.empty:
+        return pd.DataFrame()
+
+    df = submission_trades_df.copy()
+    df = df.sort_values(["round", "day", "product", "timestamp", "fill_id"]).reset_index(drop=True)
+
+    realized_rows: list[dict[str, Any]] = []
+    realized_index = 0
+
+    for (round_num, day_num, product), group in df.groupby(["round", "day", "product"], sort=False):
+        open_longs: list[dict[str, Any]] = []
+        open_shorts: list[dict[str, Any]] = []
+
+        for _, row in group.iterrows():
+            fill = row.to_dict()
+            signed_qty = int(fill["signed_quantity"])
+            remaining = abs(signed_qty)
+
+            if signed_qty > 0:
+                while remaining > 0 and open_shorts:
+                    entry_lot = open_shorts[0]
+                    matched_qty = min(remaining, int(entry_lot["remaining_qty"]))
+                    realized_rows.append(
+                        _build_realized_trade_row(
+                            realized_index=realized_index,
+                            product=product,
+                            round_num=round_num,
+                            day_num=day_num,
+                            entry_fill=entry_lot["fill"],
+                            exit_fill=fill,
+                            quantity=matched_qty,
+                            direction="Short",
+                        )
+                    )
+                    realized_index += 1
+                    remaining -= matched_qty
+                    entry_lot["remaining_qty"] -= matched_qty
+                    if entry_lot["remaining_qty"] <= 0:
+                        open_shorts.pop(0)
+
+                if remaining > 0:
+                    long_fill = fill.copy()
+                    long_fill["quantity"] = remaining
+                    long_fill["signed_quantity"] = remaining
+                    open_longs.append({"remaining_qty": remaining, "fill": long_fill})
+
+            elif signed_qty < 0:
+                while remaining > 0 and open_longs:
+                    entry_lot = open_longs[0]
+                    matched_qty = min(remaining, int(entry_lot["remaining_qty"]))
+                    realized_rows.append(
+                        _build_realized_trade_row(
+                            realized_index=realized_index,
+                            product=product,
+                            round_num=round_num,
+                            day_num=day_num,
+                            entry_fill=entry_lot["fill"],
+                            exit_fill=fill,
+                            quantity=matched_qty,
+                            direction="Long",
+                        )
+                    )
+                    realized_index += 1
+                    remaining -= matched_qty
+                    entry_lot["remaining_qty"] -= matched_qty
+                    if entry_lot["remaining_qty"] <= 0:
+                        open_longs.pop(0)
+
+                if remaining > 0:
+                    short_fill = fill.copy()
+                    short_fill["quantity"] = remaining
+                    short_fill["signed_quantity"] = -remaining
+                    open_shorts.append({"remaining_qty": remaining, "fill": short_fill})
+
+    realized_df = pd.DataFrame(realized_rows)
+    if realized_df.empty:
+        return realized_df
+
+    realized_df = realized_df.sort_values(["round", "day", "entry_timestamp", "exit_timestamp", "trade_id"]).reset_index(drop=True)
+    return realized_df
+
+
+def _build_realized_trade_row(
+    realized_index: int,
+    product: str,
+    round_num: int,
+    day_num: int,
+    entry_fill: dict[str, Any],
+    exit_fill: dict[str, Any],
+    quantity: int,
+    direction: str,
+) -> dict[str, Any]:
+    entry_price = float(entry_fill["price"])
+    exit_price = float(exit_fill["price"])
+    qty = int(quantity)
+
+    if direction == "Long":
+        pnl = (exit_price - entry_price) * qty
+    else:
+        pnl = (entry_price - exit_price) * qty
+
+    entry_notional = abs(entry_price * qty)
+    return_pct = (100.0 * pnl / entry_notional) if entry_notional > 0 else np.nan
+
+    if pnl > 0:
+        outcome = "Win"
+    elif pnl < 0:
+        outcome = "Loss"
+    else:
+        outcome = "Flat"
+
+    return {
+        "trade_id": f"RT-{realized_index}",
+        "round": round_num,
+        "day": day_num,
+        "run_label": entry_fill.get("run_label") or exit_fill.get("run_label") or f"R{round_num} D{day_num}",
+        "product": product,
+        "direction": direction,
+        "entry_side": entry_fill.get("side"),
+        "exit_side": exit_fill.get("side"),
+        "quantity": qty,
+        "entry_timestamp": entry_fill.get("timestamp"),
+        "exit_timestamp": exit_fill.get("timestamp"),
+        "hold_ticks": (
+            int(exit_fill["timestamp"]) - int(entry_fill["timestamp"])
+            if pd.notna(entry_fill.get("timestamp")) and pd.notna(exit_fill.get("timestamp"))
+            else np.nan
+        ),
+        "entry_global_step": entry_fill.get("global_step"),
+        "exit_global_step": exit_fill.get("global_step"),
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "pnl": pnl,
+        "return_pct": return_pct,
+        "outcome": outcome,
+        "entry_bid_price_1": entry_fill.get("bid_price_1"),
+        "entry_ask_price_1": entry_fill.get("ask_price_1"),
+        "entry_mid_price": entry_fill.get("mid_price"),
+        "entry_spread": entry_fill.get("spread"),
+        "exit_bid_price_1": exit_fill.get("bid_price_1"),
+        "exit_ask_price_1": exit_fill.get("ask_price_1"),
+        "exit_mid_price": exit_fill.get("mid_price"),
+        "exit_spread": exit_fill.get("spread"),
+        "entry_fill_id": entry_fill.get("fill_id"),
+        "exit_fill_id": exit_fill.get("fill_id"),
+    }
+
+
+def _safe_mean(series: pd.Series) -> float | None:
+    if series.empty:
+        return None
+    cleaned = pd.to_numeric(series, errors="coerce").dropna()
+    if cleaned.empty:
+        return None
+    return float(cleaned.mean())
+
+
+def _build_summary(
+    activity_df: pd.DataFrame,
+    submission_trades_df: pd.DataFrame,
+    realized_trades_df: pd.DataFrame,
+    targets: list[BacktestTarget],
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
     if activity_df.empty:
         empty_df = pd.DataFrame()
         return {
@@ -333,6 +540,12 @@ def _build_summary(activity_df: pd.DataFrame, submission_trades_df: pd.DataFrame
             "total_pnl": 0.0,
             "submission_trade_count": 0,
             "products_traded": [],
+            "realized_trade_count": 0,
+            "winning_trade_count": 0,
+            "losing_trade_count": 0,
+            "win_rate": None,
+            "average_win_per_trade": None,
+            "average_win_pct": None,
         }, empty_df, empty_df
 
     final_rows = (
@@ -358,7 +571,34 @@ def _build_summary(activity_df: pd.DataFrame, submission_trades_df: pd.DataFrame
     else:
         per_run["submission_trades"] = 0
 
+    if not realized_trades_df.empty:
+        realized_counts = (
+            realized_trades_df.groupby(["round", "day"], as_index=False)
+            .agg(
+                realized_trade_count=("trade_id", "size"),
+                winning_trade_count=("pnl", lambda s: int((pd.to_numeric(s, errors="coerce") > 0).sum())),
+                losing_trade_count=("pnl", lambda s: int((pd.to_numeric(s, errors="coerce") < 0).sum())),
+                average_win_per_trade=("pnl", lambda s: _safe_mean(pd.to_numeric(s, errors="coerce")[pd.to_numeric(s, errors="coerce") > 0])),
+                average_win_pct=("return_pct", lambda s: _safe_mean(pd.to_numeric(s, errors="coerce")[pd.to_numeric(s, errors="coerce") > 0])),
+            )
+        )
+        per_run = per_run.merge(
+            realized_counts,
+            how="left",
+            left_on=["round", "run_day"],
+            right_on=["round", "day"],
+        ).drop(columns=["day"], errors="ignore")
+    else:
+        per_run["realized_trade_count"] = 0
+        per_run["winning_trade_count"] = 0
+        per_run["losing_trade_count"] = 0
+        per_run["average_win_per_trade"] = np.nan
+        per_run["average_win_pct"] = np.nan
+
     per_run["submission_trades"] = per_run["submission_trades"].fillna(0).astype(int)
+    per_run["realized_trade_count"] = per_run["realized_trade_count"].fillna(0).astype(int)
+    per_run["winning_trade_count"] = per_run["winning_trade_count"].fillna(0).astype(int)
+    per_run["losing_trade_count"] = per_run["losing_trade_count"].fillna(0).astype(int)
 
     per_product = (
         final_rows.groupby(["product"], as_index=False)["profit_loss"]
@@ -374,10 +614,37 @@ def _build_summary(activity_df: pd.DataFrame, submission_trades_df: pd.DataFrame
         per_product["filled_quantity"] = 0
         per_product["submission_trades"] = 0
 
-    per_product[["filled_quantity", "submission_trades"]] = (
-        per_product[["filled_quantity", "submission_trades"]].fillna(0).astype(int)
-    )
+    if not realized_trades_df.empty:
+        realized_product = (
+            realized_trades_df.groupby("product", as_index=False)
+            .agg(
+                realized_trade_count=("trade_id", "size"),
+                winning_trade_count=("pnl", lambda s: int((pd.to_numeric(s, errors="coerce") > 0).sum())),
+                losing_trade_count=("pnl", lambda s: int((pd.to_numeric(s, errors="coerce") < 0).sum())),
+                average_win_per_trade=("pnl", lambda s: _safe_mean(pd.to_numeric(s, errors="coerce")[pd.to_numeric(s, errors="coerce") > 0])),
+                average_win_pct=("return_pct", lambda s: _safe_mean(pd.to_numeric(s, errors="coerce")[pd.to_numeric(s, errors="coerce") > 0])),
+            )
+        )
+        per_product = per_product.merge(realized_product, how="left", on="product")
+    else:
+        per_product["realized_trade_count"] = 0
+        per_product["winning_trade_count"] = 0
+        per_product["losing_trade_count"] = 0
+        per_product["average_win_per_trade"] = np.nan
+        per_product["average_win_pct"] = np.nan
+
+    int_cols = ["filled_quantity", "submission_trades", "realized_trade_count", "winning_trade_count", "losing_trade_count"]
+    per_product[int_cols] = per_product[int_cols].fillna(0).astype(int)
     per_product = per_product.sort_values("total_final_pnl", ascending=False).reset_index(drop=True)
+
+    winning_trades = realized_trades_df[realized_trades_df["pnl"] > 0].copy() if not realized_trades_df.empty else pd.DataFrame()
+    losing_trades = realized_trades_df[realized_trades_df["pnl"] < 0].copy() if not realized_trades_df.empty else pd.DataFrame()
+
+    realized_count = int(len(realized_trades_df))
+    winning_count = int(len(winning_trades))
+    losing_count = int(len(losing_trades))
+    non_flat_count = winning_count + losing_count
+    win_rate = (100.0 * winning_count / non_flat_count) if non_flat_count > 0 else None
 
     summary = {
         "num_runs": len(targets),
@@ -385,6 +652,12 @@ def _build_summary(activity_df: pd.DataFrame, submission_trades_df: pd.DataFrame
         "total_pnl": float(per_run["final_pnl"].sum()),
         "submission_trade_count": int(len(submission_trades_df)),
         "products_traded": sorted(per_product["product"].astype(str).tolist()),
+        "realized_trade_count": realized_count,
+        "winning_trade_count": winning_count,
+        "losing_trade_count": losing_count,
+        "win_rate": win_rate,
+        "average_win_per_trade": _safe_mean(winning_trades["pnl"]) if not winning_trades.empty else None,
+        "average_win_pct": _safe_mean(winning_trades["return_pct"]) if not winning_trades.empty else None,
     }
     return summary, per_run, per_product
 
@@ -421,13 +694,20 @@ def run_backtests(
 
     activity_df = _activity_logs_to_df(results)
     submission_trades_df = _submission_trades_to_df(results, activity_df)
+    realized_trades_df = _realized_trades_to_df(submission_trades_df)
     sandbox_df = _sandbox_logs_to_df(results)
-    summary, per_run_df, per_product_df = _build_summary(activity_df, submission_trades_df, targets)
+    summary, per_run_df, per_product_df = _build_summary(
+        activity_df,
+        submission_trades_df,
+        realized_trades_df,
+        targets,
+    )
 
     return BacktestPayload(
         targets=targets,
         activity_rows=activity_df.to_dict("records") if not activity_df.empty else [],
         submission_trade_rows=submission_trades_df.to_dict("records") if not submission_trades_df.empty else [],
+        realized_trade_rows=realized_trades_df.to_dict("records") if not realized_trades_df.empty else [],
         sandbox_rows=sandbox_df.to_dict("records") if not sandbox_df.empty else [],
         per_run_rows=per_run_df.to_dict("records") if not per_run_df.empty else [],
         per_product_rows=per_product_df.to_dict("records") if not per_product_df.empty else [],

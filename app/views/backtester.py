@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import math
 import tempfile
 from pathlib import Path
 
 import dash_ag_grid as dag
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, State, dcc, html
@@ -18,9 +20,10 @@ from app.models.schemas import BacktestRequest
 def build_backtester_layout():
     return html.Div(
         [
+            dcc.Store(id="backtest-payload-store", data={}),
             html.H3("Strategy Backtester"),
             html.P(
-                "Drop a Trader file here, choose a preset or manual round/day targets, and the dashboard will run the Prosperity 4 backtester and show fills, PnL, logs, and positions."
+                "Drop a Trader file here, choose a preset or manual round/day targets, and the dashboard will run the Prosperity 4 backtester and show fills, PnL, realized trades, logs, and positions."
             ),
             html.Div(
                 [
@@ -146,9 +149,9 @@ def build_backtester_layout():
             html.Div(id="backtest-status", style={"marginBottom": "20px"}),
             html.Div(id="backtest-summary-container", style={"marginBottom": "20px"}),
             html.H4("Combined charts"),
-            dcc.Graph(id="backtest-pnl-graph"),
-            dcc.Graph(id="backtest-execution-graph"),
-            dcc.Graph(id="backtest-position-graph"),
+            dcc.Graph(id="backtest-pnl-graph", figure=_empty_figure("No backtest has been run yet.")),
+            dcc.Graph(id="backtest-execution-graph", figure=_empty_figure("No backtest has been run yet.")),
+            dcc.Graph(id="backtest-position-graph", figure=_empty_figure("No backtest has been run yet.")),
             html.H4("Per-product summary"),
             html.Div(id="backtest-product-summary-cards-container", style={"marginBottom": "20px"}),
             html.H4("PnL by product"),
@@ -159,6 +162,59 @@ def build_backtester_layout():
             html.Div(id="backtest-position-by-product-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-per-run-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-per-product-container", style={"marginBottom": "20px"}),
+
+            html.Div(
+                [
+                    html.H4("Winning trades"),
+                    html.P("Click one row to show that trade on the price graph below."),
+                    dag.AgGrid(
+                        id="backtest-winning-trades-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={
+                            "pagination": True,
+                            "paginationPageSize": 20,
+                            "rowSelection": "single",
+                            "suppressRowClickSelection": False,
+                        },
+                        style={"height": "360px", "width": "100%"},
+                        className="ag-theme-alpine",
+                    ),
+                    dcc.Graph(
+                        id="backtest-winning-trade-graph",
+                        figure=_empty_figure("Run a backtest, then click a winning trade row."),
+                    ),
+                ],
+                style={"marginBottom": "24px"},
+            ),
+
+            html.Div(
+                [
+                    html.H4("Losing trades"),
+                    html.P("Click one row to show that trade on the price graph below."),
+                    dag.AgGrid(
+                        id="backtest-losing-trades-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={
+                            "pagination": True,
+                            "paginationPageSize": 20,
+                            "rowSelection": "single",
+                            "suppressRowClickSelection": False,
+                        },
+                        style={"height": "360px", "width": "100%"},
+                        className="ag-theme-alpine",
+                    ),
+                    dcc.Graph(
+                        id="backtest-losing-trade-graph",
+                        figure=_empty_figure("Run a backtest, then click a losing trade row."),
+                    ),
+                ],
+                style={"marginBottom": "24px"},
+            ),
+
             html.Div(id="backtest-trades-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-activity-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-sandbox-container", style={"marginBottom": "20px"}),
@@ -200,19 +256,7 @@ def register_backtester_callbacks(app):
 
     @app.callback(
         Output("backtest-status", "children"),
-        Output("backtest-summary-container", "children"),
-        Output("backtest-pnl-graph", "figure"),
-        Output("backtest-execution-graph", "figure"),
-        Output("backtest-position-graph", "figure"),
-        Output("backtest-product-summary-cards-container", "children"),
-        Output("backtest-pnl-by-product-container", "children"),
-        Output("backtest-execution-by-product-container", "children"),
-        Output("backtest-position-by-product-container", "children"),
-        Output("backtest-per-run-container", "children"),
-        Output("backtest-per-product-container", "children"),
-        Output("backtest-trades-container", "children"),
-        Output("backtest-activity-container", "children"),
-        Output("backtest-sandbox-container", "children"),
+        Output("backtest-payload-store", "data"),
         Input("run-backtest-btn", "n_clicks"),
         State("strategy-upload", "contents"),
         State("strategy-upload", "filename"),
@@ -239,44 +283,11 @@ def register_backtester_callbacks(app):
         selected_round,
         selected_day,
     ):
-        empty_fig = _empty_figure("No backtest has been run yet.")
-        empty_div = html.Div()
-
         if not n_clicks:
-            return (
-                html.Div(),
-                html.Div(),
-                empty_fig,
-                empty_fig,
-                empty_fig,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-            )
+            return html.Div(), {}
 
         if not strategy_contents or not strategy_filename:
-            return (
-                _error_box("Upload a strategy file first."),
-                html.Div(),
-                empty_fig,
-                empty_fig,
-                empty_fig,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-                empty_div,
-            )
+            return _error_box("Upload a strategy file first."), {}
 
         try:
             limit_overrides = parse_limit_overrides(limit_text, preset)
@@ -308,12 +319,6 @@ def register_backtester_callbacks(app):
                     custom_data_root=custom_data_root,
                 )
 
-            activity_df = pd.DataFrame(payload.activity_rows)
-            trades_df = pd.DataFrame(payload.submission_trade_rows)
-            sandbox_df = pd.DataFrame(payload.sandbox_rows)
-            per_run_df = pd.DataFrame(payload.per_run_rows)
-            per_product_df = pd.DataFrame(payload.per_product_rows)
-
             status = html.Div(
                 [
                     html.Strong("Backtest complete."),
@@ -332,26 +337,49 @@ def register_backtester_callbacks(app):
                 },
             )
 
-            return (
-                status,
-                _build_summary_cards(payload.summary),
-                _make_pnl_figure(activity_df),
-                _make_execution_figure(activity_df, trades_df),
-                _make_position_figure(trades_df),
-                _build_product_metric_cards(per_product_df),
-                _build_product_graphs_container(activity_df, trades_df, mode="pnl"),
-                _build_product_graphs_container(activity_df, trades_df, mode="execution"),
-                _build_product_graphs_container(activity_df, trades_df, mode="position"),
-                _build_grid_section("Per-run summary", per_run_df),
-                _build_grid_section("Per-product summary", per_product_df),
-                _build_grid_section("Submission fills", trades_df),
-                _build_grid_section("Activity log", activity_df),
-                _build_grid_section("Sandbox / lambda logs", sandbox_df),
-            )
+            payload_data = {
+                "summary": payload.summary,
+                "targets": [target.label for target in payload.targets],
+                "activity_rows": payload.activity_rows,
+                "submission_trade_rows": payload.submission_trade_rows,
+                "realized_trade_rows": payload.realized_trade_rows,
+                "sandbox_rows": payload.sandbox_rows,
+                "per_run_rows": payload.per_run_rows,
+                "per_product_rows": payload.per_product_rows,
+            }
+
+            return status, payload_data
 
         except Exception as exc:
+            return _error_box(str(exc)), {}
+
+    @app.callback(
+        Output("backtest-summary-container", "children"),
+        Output("backtest-pnl-graph", "figure"),
+        Output("backtest-execution-graph", "figure"),
+        Output("backtest-position-graph", "figure"),
+        Output("backtest-product-summary-cards-container", "children"),
+        Output("backtest-pnl-by-product-container", "children"),
+        Output("backtest-execution-by-product-container", "children"),
+        Output("backtest-position-by-product-container", "children"),
+        Output("backtest-per-run-container", "children"),
+        Output("backtest-per-product-container", "children"),
+        Output("backtest-winning-trades-grid", "columnDefs"),
+        Output("backtest-winning-trades-grid", "rowData"),
+        Output("backtest-losing-trades-grid", "columnDefs"),
+        Output("backtest-losing-trades-grid", "rowData"),
+        Output("backtest-trades-container", "children"),
+        Output("backtest-activity-container", "children"),
+        Output("backtest-sandbox-container", "children"),
+        Input("backtest-payload-store", "data"),
+    )
+    def render_backtest_payload(payload_data):
+        empty_fig = _empty_figure("No backtest has been run yet.")
+        empty_div = html.Div()
+        simple_cols = _simple_trade_table_columns()
+
+        if not payload_data:
             return (
-                _error_box(str(exc)),
                 html.Div(),
                 empty_fig,
                 empty_fig,
@@ -362,17 +390,99 @@ def register_backtester_callbacks(app):
                 empty_div,
                 empty_div,
                 empty_div,
+                simple_cols,
+                [],
+                simple_cols,
+                [],
                 empty_div,
                 empty_div,
                 empty_div,
             )
 
+        activity_df = pd.DataFrame(payload_data.get("activity_rows", []))
+        trades_df = pd.DataFrame(payload_data.get("submission_trade_rows", []))
+        realized_df = pd.DataFrame(payload_data.get("realized_trade_rows", []))
+        sandbox_df = pd.DataFrame(payload_data.get("sandbox_rows", []))
+        per_run_df = pd.DataFrame(payload_data.get("per_run_rows", []))
+        per_product_df = pd.DataFrame(payload_data.get("per_product_rows", []))
+        summary = payload_data.get("summary", {})
+
+        winning_df = realized_df[realized_df["pnl"] > 0].copy() if not realized_df.empty else pd.DataFrame()
+        losing_df = realized_df[realized_df["pnl"] < 0].copy() if not realized_df.empty else pd.DataFrame()
+
+        return (
+            _build_summary_cards(summary),
+            _make_pnl_figure(activity_df),
+            _make_execution_figure(activity_df, trades_df),
+            _make_position_figure(trades_df),
+            _build_product_metric_cards(per_product_df),
+            _build_product_graphs_container(activity_df, trades_df, mode="pnl"),
+            _build_product_graphs_container(activity_df, trades_df, mode="execution"),
+            _build_product_graphs_container(activity_df, trades_df, mode="position"),
+            _build_grid_section("Per-run summary", per_run_df),
+            _build_grid_section("Per-product summary", per_product_df),
+            simple_cols,
+            _prepare_simple_trade_rows(winning_df, descending=True),
+            simple_cols,
+            _prepare_simple_trade_rows(losing_df, descending=False),
+            _build_grid_section("Submission fills", trades_df),
+            _build_grid_section("Activity log", activity_df),
+            _build_grid_section("Sandbox / lambda logs", sandbox_df),
+        )
+
+    @app.callback(
+        Output("backtest-winning-trade-graph", "figure"),
+        Input("backtest-payload-store", "data"),
+        Input("backtest-winning-trades-grid", "selectedRows"),
+    )
+    def update_winning_trade_graph(payload_data, selected_rows):
+        if not payload_data:
+            return _empty_figure("Run a backtest, then click a winning trade row.")
+
+        activity_df = pd.DataFrame(payload_data.get("activity_rows", []))
+        realized_df = pd.DataFrame(payload_data.get("realized_trade_rows", []))
+
+        winning_df = realized_df[realized_df["pnl"] > 0].copy() if not realized_df.empty else pd.DataFrame()
+        if winning_df.empty:
+            return _empty_figure("No winning trades were realized in this backtest.")
+
+        if not selected_rows:
+            return _empty_figure("Click a winning trade row to show its entry and exit on the price chart.")
+
+        return _make_trade_focus_figure(activity_df, selected_rows[0], title_prefix="Winning trade")
+
+    @app.callback(
+        Output("backtest-losing-trade-graph", "figure"),
+        Input("backtest-payload-store", "data"),
+        Input("backtest-losing-trades-grid", "selectedRows"),
+    )
+    def update_losing_trade_graph(payload_data, selected_rows):
+        if not payload_data:
+            return _empty_figure("Run a backtest, then click a losing trade row.")
+
+        activity_df = pd.DataFrame(payload_data.get("activity_rows", []))
+        realized_df = pd.DataFrame(payload_data.get("realized_trade_rows", []))
+
+        losing_df = realized_df[realized_df["pnl"] < 0].copy() if not realized_df.empty else pd.DataFrame()
+        if losing_df.empty:
+            return _empty_figure("No losing trades were realized in this backtest.")
+
+        if not selected_rows:
+            return _empty_figure("Click a losing trade row to show its entry and exit on the price chart.")
+
+        return _make_trade_focus_figure(activity_df, selected_rows[0], title_prefix="Losing trade")
+
 
 def _build_summary_cards(summary: dict):
     cards = [
-        ("Total PnL", f"{summary.get('total_pnl', 0):,.2f}"),
+        ("Total PnL", _fmt_number(summary.get("total_pnl"), decimals=2)),
         ("Runs", str(summary.get("num_runs", 0))),
         ("Submission fills", str(summary.get("submission_trade_count", 0))),
+        ("Realized trades", str(summary.get("realized_trade_count", 0))),
+        ("Winning trades", str(summary.get("winning_trade_count", 0))),
+        ("Losing trades", str(summary.get("losing_trade_count", 0))),
+        ("Average win / trade", _fmt_number(summary.get("average_win_per_trade"), decimals=2)),
+        ("Win rate", _fmt_pct(summary.get("win_rate"))),
         ("Products traded", ", ".join(summary.get("products_traded", [])) or "None"),
     ]
     return html.Div(
@@ -391,7 +501,7 @@ def _build_summary_cards(summary: dict):
         ],
         style={
             "display": "grid",
-            "gridTemplateColumns": "repeat(4, minmax(220px, 1fr))",
+            "gridTemplateColumns": "repeat(auto-fit, minmax(220px, 1fr))",
             "gap": "16px",
         },
     )
@@ -404,17 +514,24 @@ def _build_product_metric_cards(per_product_df: pd.DataFrame):
     cards = []
     for _, row in per_product_df.iterrows():
         product = str(row.get("product", "UNKNOWN"))
-        pnl = float(row.get("total_final_pnl", 0))
+        pnl = row.get("total_final_pnl")
         qty = int(row.get("filled_quantity", 0))
         fills = int(row.get("submission_trades", 0))
+        realized = int(row.get("realized_trade_count", 0))
+        wins = int(row.get("winning_trade_count", 0))
+        losses = int(row.get("losing_trade_count", 0))
+        avg_win = row.get("average_win_per_trade")
 
         cards.append(
             html.Div(
                 [
                     html.H4(product),
-                    html.P(f"Final PnL: {pnl:,.2f}"),
+                    html.P(f"Final PnL: {_fmt_number(pnl, decimals=2)}"),
                     html.P(f"Filled Quantity: {qty}"),
                     html.P(f"Submission Fills: {fills}"),
+                    html.P(f"Realized Trades: {realized}"),
+                    html.P(f"Wins / Losses: {wins} / {losses}"),
+                    html.P(f"Average Win / Trade: {_fmt_number(avg_win, decimals=2)}"),
                 ],
                 style={
                     "border": "1px solid #ddd",
@@ -430,10 +547,38 @@ def _build_product_metric_cards(per_product_df: pd.DataFrame):
         cards,
         style={
             "display": "grid",
-            "gridTemplateColumns": "repeat(auto-fit, minmax(240px, 1fr))",
+            "gridTemplateColumns": "repeat(auto-fit, minmax(260px, 1fr))",
             "gap": "16px",
         },
     )
+
+
+def _simple_trade_table_columns() -> list[dict]:
+    return [
+        {"field": "product", "headerName": "Product", "flex": 1},
+        {"field": "quantity", "headerName": "Qty", "flex": 1},
+        {"field": "entry_timestamp", "headerName": "Entry Ts", "flex": 1},
+        {"field": "exit_timestamp", "headerName": "Exit Ts", "flex": 1},
+        {"field": "pnl", "headerName": "PnL", "flex": 1},
+    ]
+
+
+def _prepare_simple_trade_rows(df: pd.DataFrame, descending: bool) -> list[dict]:
+    if df.empty:
+        return []
+
+    out = df.copy()
+    keep_sort_cols = ["pnl", "product", "entry_timestamp"]
+    for col in keep_sort_cols:
+        if col not in out.columns:
+            out[col] = None
+
+    out = out.sort_values(
+        ["pnl", "product", "entry_timestamp"],
+        ascending=[not descending, True, True],
+    ).reset_index(drop=True)
+
+    return out.to_dict("records")
 
 
 def _build_grid_section(title: str, df: pd.DataFrame):
@@ -730,6 +875,138 @@ def _make_product_position_figure(trades_df: pd.DataFrame, product: str) -> go.F
     return fig
 
 
+def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_prefix: str) -> go.Figure:
+    if activity_df.empty:
+        return _empty_figure("No activity log data is available for this trade.")
+
+    product = trade_row.get("product")
+    round_num = trade_row.get("round")
+    day_num = trade_row.get("day")
+    run_label = trade_row.get("run_label")
+    entry_ts = trade_row.get("entry_timestamp")
+    exit_ts = trade_row.get("exit_timestamp")
+    entry_price = trade_row.get("entry_price")
+    exit_price = trade_row.get("exit_price")
+    qty = trade_row.get("quantity")
+    pnl = trade_row.get("pnl")
+    direction = trade_row.get("direction")
+
+    df = activity_df.copy()
+    if "product" in df.columns:
+        df = df[df["product"] == product]
+    if "round" in df.columns and round_num is not None:
+        df = df[df["round"] == round_num]
+    if "run_day" in df.columns and day_num is not None:
+        df = df[df["run_day"] == day_num]
+
+    if df.empty:
+        return _empty_figure("Could not find matching price data for the selected trade.")
+
+    df = df.sort_values("timestamp").copy()
+
+    fig = go.Figure()
+
+    if "bid_price_1" in df.columns and df["bid_price_1"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df["bid_price_1"],
+                mode="lines",
+                name="Bid 1",
+            )
+        )
+
+    if "ask_price_1" in df.columns and df["ask_price_1"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df["ask_price_1"],
+                mode="lines",
+                name="Ask 1",
+            )
+        )
+
+    if "mid_price" in df.columns and df["mid_price"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df["mid_price"],
+                mode="lines",
+                name="Mid Price",
+                line={"width": 3},
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[entry_ts],
+            y=[entry_price],
+            mode="markers+text",
+            name="Entry",
+            text=["Entry"],
+            textposition="top center",
+            marker={"size": 14, "symbol": "triangle-up"},
+            hovertemplate="Entry<br>Timestamp=%{x}<br>Price=%{y}<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[exit_ts],
+            y=[exit_price],
+            mode="markers+text",
+            name="Exit",
+            text=["Exit"],
+            textposition="top center",
+            marker={"size": 14, "symbol": "triangle-down"},
+            hovertemplate="Exit<br>Timestamp=%{x}<br>Price=%{y}<extra></extra>",
+        )
+    )
+
+    fig.add_vline(x=entry_ts, line_dash="dash")
+    fig.add_vline(x=exit_ts, line_dash="dash")
+
+    title = (
+        f"{title_prefix}: {product} | {run_label} | {direction} | "
+        f"Qty={qty} | PnL={_fmt_number(pnl, 2)}"
+    )
+
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        height=430,
+        hovermode="x unified",
+        margin={"l": 50, "r": 20, "t": 70, "b": 50},
+        annotations=[
+            dict(
+                x=0.01,
+                y=0.99,
+                xref="paper",
+                yref="paper",
+                xanchor="left",
+                yanchor="top",
+                showarrow=False,
+                align="left",
+                text=(
+                    f"Product: {product}<br>"
+                    f"Run: {run_label}<br>"
+                    f"Direction: {direction}<br>"
+                    f"Quantity: {qty}<br>"
+                    f"Entry ts: {entry_ts} @ {_fmt_number(entry_price, 2)}<br>"
+                    f"Exit ts: {exit_ts} @ {_fmt_number(exit_price, 2)}<br>"
+                    f"PnL: {_fmt_number(pnl, 2)}"
+                ),
+                bordercolor="#d1d5db",
+                borderwidth=1,
+                bgcolor="#ffffff",
+            )
+        ],
+    )
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Price")
+    return fig
+
+
 def _empty_figure(title: str) -> go.Figure:
     fig = go.Figure()
     fig.update_layout(
@@ -774,3 +1051,27 @@ def _save_uploaded_file(contents: str, filename: str, target_dir: Path) -> Path:
     file_path = target_dir / Path(filename).name
     file_path.write_bytes(decoded)
     return file_path
+
+
+def _fmt_number(value, decimals: int = 2) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(value):
+        return "N/A"
+    return f"{value:,.{decimals}f}"
+
+
+def _fmt_pct(value) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(value):
+        return "N/A"
+    return f"{value:.2f}%"
