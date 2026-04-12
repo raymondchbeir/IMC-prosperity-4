@@ -11,6 +11,10 @@ from dash.exceptions import PreventUpdate
 from app.ingestion.session_builder import build_session
 from app.rounds.registry import get_round_plugin
 from app.views.backtester import build_backtester_layout, register_backtester_callbacks
+from app.views.market_microstructure import (
+    build_market_microstructure_layout,
+    register_market_microstructure_callbacks,
+)
 from app.views.market_overview import (
     build_market_overview_graphs_layout,
     build_shared_market_controls_layout,
@@ -31,6 +35,7 @@ from app.views.random_walk import (
     build_random_walk_summary_cards,
     make_random_walk_diagnostics_figure,
 )
+from app.views.research import build_research_layout, register_research_callbacks
 from app.views.session_summary import build_session_summary_components
 from app.views.trades import (
     build_nancy_pelosi_identifier_components,
@@ -103,6 +108,26 @@ def get_upload_layout():
                             html.Div(
                                 build_nancy_pelosi_identifier_layout(),
                                 id="nancy-pelosi-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Market / Microstructure",
+                        value="market-microstructure",
+                        children=[
+                            html.Div(
+                                build_market_microstructure_layout(),
+                                id="market-microstructure-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Research",
+                        value="research",
+                        children=[
+                            html.Div(
+                                build_research_layout(),
+                                id="research-container",
                             )
                         ],
                     ),
@@ -697,6 +722,8 @@ def register_upload_callbacks(app):
         return dcc.send_data_frame(trades_df.to_csv, "filtered_trades.csv", index=False)
 
     register_backtester_callbacks(app)
+    register_research_callbacks(app)
+    register_market_microstructure_callbacks(app)
 
 
 def filter_selected_data(

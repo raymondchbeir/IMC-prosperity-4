@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, State, dcc, html
+from dash.exceptions import PreventUpdate
 
 from app.backtesting.presets import PRESET_OPTIONS
 from app.backtesting.runner import build_custom_data_root, parse_limit_overrides, run_backtests
@@ -147,6 +148,26 @@ def build_backtester_layout():
                 style={"display": "flex", "gap": "16px", "flexWrap": "wrap", "marginBottom": "16px"},
             ),
             html.Div(id="backtest-status", style={"marginBottom": "20px"}),
+            html.Div(
+                [
+                    html.Button(
+                        "Export Realized Trades CSV",
+                        id="export-realized-trades-btn",
+                        n_clicks=0,
+                        style={
+                            "height": "42px",
+                            "padding": "0 18px",
+                            "borderRadius": "8px",
+                            "border": "1px solid #ccc",
+                            "backgroundColor": "#f3f4f6",
+                            "cursor": "pointer",
+                            "marginBottom": "16px",
+                        },
+                    ),
+                    dcc.Download(id="download-realized-trades"),
+                ],
+                style={"marginBottom": "8px"},
+            ),
             html.Div(id="backtest-summary-container", style={"marginBottom": "20px"}),
             html.H4("Combined charts"),
             dcc.Graph(id="backtest-pnl-graph", figure=_empty_figure("No backtest has been run yet.")),
@@ -471,6 +492,30 @@ def register_backtester_callbacks(app):
             return _empty_figure("Click a losing trade row to show its entry and exit on the price chart.")
 
         return _make_trade_focus_figure(activity_df, selected_rows[0], title_prefix="Losing trade")
+
+    @app.callback(
+        Output("download-realized-trades", "data"),
+        Input("export-realized-trades-btn", "n_clicks"),
+        State("backtest-payload-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_realized_trades_csv(n_clicks, payload_data):
+        if not n_clicks or not payload_data:
+            raise PreventUpdate
+
+        realized_rows = payload_data.get("realized_trade_rows", [])
+        if not realized_rows:
+            raise PreventUpdate
+
+        realized_df = pd.DataFrame(realized_rows)
+        if realized_df.empty:
+            raise PreventUpdate
+
+        return dcc.send_data_frame(
+            realized_df.to_csv,
+            "realized_trades.csv",
+            index=False,
+        )
 
 
 def _build_summary_cards(summary: dict):
