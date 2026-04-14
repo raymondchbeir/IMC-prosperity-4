@@ -218,6 +218,7 @@ def infer_trade_side(prices_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.Dat
     return merged
 
 
+
 def enrich_market_data(
     prices_df: pd.DataFrame,
     trades_df: pd.DataFrame,
@@ -231,8 +232,44 @@ def enrich_market_data(
         if sort_cols:
             prices = prices.sort_values(sort_cols).copy()
 
+        numeric_cols = [
+            "timestamp",
+            "mid_price",
+            "bid_price_1", "bid_volume_1",
+            "bid_price_2", "bid_volume_2",
+            "bid_price_3", "bid_volume_3",
+            "ask_price_1", "ask_volume_1",
+            "ask_price_2", "ask_volume_2",
+            "ask_price_3", "ask_volume_3",
+        ]
+        for col in numeric_cols:
+            if col in prices.columns:
+                prices[col] = pd.to_numeric(prices[col], errors="coerce")
+
         if {"ask_price_1", "bid_price_1"}.issubset(prices.columns):
-            prices["spread"] = prices["ask_price_1"] - prices["bid_price_1"]
+            valid_book = (prices["bid_price_1"] > 0) & (prices["ask_price_1"] > 0)
+
+            if "mid_price" in prices.columns:
+                bad_mid = prices["mid_price"].isna() | (prices["mid_price"] <= 0)
+                prices.loc[valid_book & bad_mid, "mid_price"] = (
+                    prices.loc[valid_book & bad_mid, "bid_price_1"]
+                    + prices.loc[valid_book & bad_mid, "ask_price_1"]
+                ) / 2.0
+
+            bad_book = ~valid_book
+            for col in ["bid_price_1", "ask_price_1", "mid_price"]:
+                if col in prices.columns:
+                    prices.loc[bad_book, col] = np.nan
+
+            prices["spread"] = np.nan
+            prices.loc[valid_book, "spread"] = (
+                prices.loc[valid_book, "ask_price_1"] - prices.loc[valid_book, "bid_price_1"]
+            )
+        else:
+            prices["spread"] = pd.NA
+
+        if "mid_price" in prices.columns:
+            prices.loc[prices["mid_price"] <= 0, "mid_price"] = np.nan
 
         bid_cols = [c for c in ["bid_volume_1", "bid_volume_2", "bid_volume_3"] if c in prices.columns]
         ask_cols = [c for c in ["ask_volume_1", "ask_volume_2", "ask_volume_3"] if c in prices.columns]
@@ -256,7 +293,7 @@ def enrich_market_data(
         )
 
         if "mid_price" in prices.columns and prices["mid_price"].notna().any():
-            prices["mid_return"] = prices["mid_price"].pct_change()
+            prices["mid_return"] = prices["mid_price"].pct_change(fill_method=None)
             prices["rolling_vol"] = prices["mid_return"].rolling(window).std()
             prices["fwd_mid_return_1"] = prices["mid_price"].shift(-1) / prices["mid_price"] - 1
             prices["fwd_mid_return_5"] = prices["mid_price"].shift(-5) / prices["mid_price"] - 1
@@ -280,17 +317,34 @@ def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, com
         if sort_cols:
             prices_df = prices_df.sort_values(sort_cols).copy()
 
+        for col in ["bid_price_1", "ask_price_1", "mid_price"]:
+            if col in prices_df.columns:
+                prices_df[col] = pd.to_numeric(prices_df[col], errors="coerce")
+                prices_df.loc[prices_df[col] <= 0, col] = np.nan
+
         if compare_days and "day" in prices_df.columns:
             for day, day_df in prices_df.groupby("day"):
-                fig.add_trace(go.Scatter(x=day_df["timestamp"], y=day_df["bid_price_1"], mode="lines", name=f"Bid 1 (day {day})"))
-                fig.add_trace(go.Scatter(x=day_df["timestamp"], y=day_df["ask_price_1"], mode="lines", name=f"Ask 1 (day {day})"))
-                if "mid_price" in day_df.columns and day_df["mid_price"].notna().any():
-                    fig.add_trace(go.Scatter(x=day_df["timestamp"], y=day_df["mid_price"], mode="lines", name=f"Mid Price (day {day})"))
+                bid_df = day_df[day_df["bid_price_1"].notna()] if "bid_price_1" in day_df.columns else pd.DataFrame()
+                ask_df = day_df[day_df["ask_price_1"].notna()] if "ask_price_1" in day_df.columns else pd.DataFrame()
+                mid_df = day_df[day_df["mid_price"].notna()] if "mid_price" in day_df.columns else pd.DataFrame()
+
+                if not bid_df.empty:
+                    fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name=f"Bid 1 (day {day})"))
+                if not ask_df.empty:
+                    fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name=f"Ask 1 (day {day})"))
+                if not mid_df.empty:
+                    fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name=f"Mid Price (day {day})"))
         else:
-            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["bid_price_1"], mode="lines", name="Bid 1"))
-            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["ask_price_1"], mode="lines", name="Ask 1"))
-            if "mid_price" in prices_df.columns and prices_df["mid_price"].notna().any():
-                fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["mid_price"], mode="lines", name="Mid Price"))
+            bid_df = prices_df[prices_df["bid_price_1"].notna()] if "bid_price_1" in prices_df.columns else pd.DataFrame()
+            ask_df = prices_df[prices_df["ask_price_1"].notna()] if "ask_price_1" in prices_df.columns else pd.DataFrame()
+            mid_df = prices_df[prices_df["mid_price"].notna()] if "mid_price" in prices_df.columns else pd.DataFrame()
+
+            if not bid_df.empty:
+                fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name="Bid 1"))
+            if not ask_df.empty:
+                fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name="Ask 1"))
+            if not mid_df.empty:
+                fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name="Mid Price"))
 
     if not trades_df.empty and not compare_days:
         side_to_color = {"Buy": "green", "Sell": "red", "Unknown": "gray"}
@@ -320,7 +374,6 @@ def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, com
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Price")
     return _apply_common_layout(fig, "Top of Book + Trades", 460)
-
 
 def make_spread_figure(prices_df: pd.DataFrame, compare_days: bool = False) -> go.Figure:
     fig = go.Figure()
@@ -490,6 +543,7 @@ def make_returns_volatility_figure(prices_df: pd.DataFrame, window: int = 25) ->
     return fig
 
 
+
 def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
@@ -511,7 +565,7 @@ def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
             for pcol, vcol in price_cols:
                 price = row.get(pcol)
                 vol = row.get(vcol)
-                if pd.notna(price) and pd.notna(vol):
+                if pd.notna(price) and pd.notna(vol) and float(price) > 0:
                     records.append((ts, price, vol))
 
         if records:
@@ -538,7 +592,6 @@ def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text="Price Level")
     return fig
 
-
 def make_trade_size_histogram_figure(trades_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
@@ -556,6 +609,7 @@ def make_trade_size_histogram_figure(trades_df: pd.DataFrame) -> go.Figure:
     return _apply_common_layout(fig, "Trade Size Distribution", 320)
 
 
+
 def make_cross_product_figure(prices_df: pd.DataFrame, selected_product: str, compare_products: list[str]) -> go.Figure:
     fig = go.Figure()
 
@@ -568,15 +622,19 @@ def make_cross_product_figure(prices_df: pd.DataFrame, selected_product: str, co
         dfp = prices_df[prices_df["product"] == product].sort_values("timestamp").copy()
         if dfp.empty:
             continue
-        if "mid_price" in dfp.columns and dfp["mid_price"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=dfp["timestamp"],
-                    y=dfp["mid_price"],
-                    mode="lines",
-                    name=product,
+        if "mid_price" in dfp.columns:
+            dfp["mid_price"] = pd.to_numeric(dfp["mid_price"], errors="coerce")
+            dfp.loc[dfp["mid_price"] <= 0, "mid_price"] = np.nan
+            dfp = dfp[dfp["mid_price"].notna()]
+            if not dfp.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=dfp["timestamp"],
+                        y=dfp["mid_price"],
+                        mode="lines",
+                        name=product,
+                    )
                 )
-            )
 
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Mid Price")

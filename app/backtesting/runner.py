@@ -230,6 +230,7 @@ def build_custom_data_root(upload_dir: Path, filenames: list[str]) -> Path:
     return data_root
 
 
+
 def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     run_index = 0
@@ -246,12 +247,45 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
             data["run_label"] = f"R{result.round_num} D{result.day_num}"
             data["run_index"] = run_index
             data["global_step"] = timestamp_to_step[row.timestamp]
+
+            numeric_cols = [
+                "day",
+                "timestamp",
+                "bid_price_1",
+                "bid_volume_1",
+                "bid_price_2",
+                "bid_volume_2",
+                "bid_price_3",
+                "bid_volume_3",
+                "ask_price_1",
+                "ask_volume_1",
+                "ask_price_2",
+                "ask_volume_2",
+                "ask_price_3",
+                "ask_volume_3",
+                "mid_price",
+                "profit_loss",
+            ]
+            for col in numeric_cols:
+                if col in data:
+                    data[col] = pd.to_numeric(pd.Series([data[col]]), errors="coerce").iloc[0]
+
             bid = data.get("bid_price_1")
             ask = data.get("ask_price_1")
-            if pd.notna(bid) and pd.notna(ask):
-                data["spread"] = ask - bid
+
+            if pd.notna(bid) and pd.notna(ask) and bid > 0 and ask > 0:
+                data["spread"] = float(ask) - float(bid)
+
+                mid = data.get("mid_price")
+                if pd.isna(mid) or mid <= 0:
+                    data["mid_price"] = (float(bid) + float(ask)) / 2.0
             else:
+                data["bid_price_1"] = np.nan
+                data["ask_price_1"] = np.nan
+                data["mid_price"] = np.nan
                 data["spread"] = np.nan
+                data["profit_loss"] = np.nan
+
             rows.append(data)
 
         global_step_offset += len(timestamps)
@@ -260,6 +294,46 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+
+    for col in [
+        "day",
+        "timestamp",
+        "bid_price_1",
+        "bid_volume_1",
+        "bid_price_2",
+        "bid_volume_2",
+        "bid_price_3",
+        "bid_volume_3",
+        "ask_price_1",
+        "ask_volume_1",
+        "ask_price_2",
+        "ask_volume_2",
+        "ask_price_3",
+        "ask_volume_3",
+        "mid_price",
+        "profit_loss",
+        "spread",
+        "round",
+        "run_day",
+        "run_index",
+        "global_step",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.sort_values(["run_index", "product", "timestamp"]).reset_index(drop=True)
+
+    # Fill broken quote gaps within each run/product so charts do not spike to zero/NaN.
+    fill_cols = [c for c in ["bid_price_1", "ask_price_1", "mid_price", "spread", "profit_loss"] if c in df.columns]
+    if fill_cols:
+        df[fill_cols] = (
+            df.groupby(["run_index", "product"], sort=False)[fill_cols]
+            .ffill()
+        )
+
+    # As a final guard, never allow nonpositive mids to hit the graph.
+    if "mid_price" in df.columns:
+        df.loc[df["mid_price"] <= 0, "mid_price"] = np.nan
 
     df = df.sort_values(["run_index", "timestamp", "product"]).reset_index(drop=True)
     return df
@@ -344,6 +418,25 @@ def _submission_trades_to_df(results: list[Any], activity_df: pd.DataFrame) -> p
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+
+    for col in [
+        "fill_id",
+        "round",
+        "day",
+        "timestamp",
+        "price",
+        "quantity",
+        "signed_quantity",
+        "cash_flow",
+        "global_step",
+        "bid_price_1",
+        "ask_price_1",
+        "mid_price",
+        "spread",
+        "mtm_profit_loss",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.sort_values(["round", "day", "timestamp", "product", "fill_id"]).reset_index(drop=True)
     df["position_after_trade"] = df.groupby(["round", "day", "product"])["signed_quantity"].cumsum()

@@ -17,6 +17,81 @@ from app.backtesting.runner import build_custom_data_root, parse_limit_overrides
 from app.config import DEFAULT_BACKTEST_PRESET, DEFAULT_LIMIT_OVERRIDES_TEXT, DEFAULT_MATCH_TRADES
 from app.models.schemas import BacktestRequest
 
+def _build_custom_data_root_from_session_store(session_store: dict, tmpdir_path: Path) -> Path | None:
+    if not session_store:
+        return None
+
+    prices_df = pd.DataFrame(session_store.get("prices", []))
+    trades_df = pd.DataFrame(session_store.get("trades", []))
+
+    if prices_df.empty and trades_df.empty:
+        return None
+
+    data_root = tmpdir_path / "custom_backtest_data"
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    price_cols = [
+        "timestamp",
+        "product",
+        "bid_price_1",
+        "bid_volume_1",
+        "bid_price_2",
+        "bid_volume_2",
+        "bid_price_3",
+        "bid_volume_3",
+        "ask_price_1",
+        "ask_volume_1",
+        "ask_price_2",
+        "ask_volume_2",
+        "ask_price_3",
+        "ask_volume_3",
+        "mid_price",
+        "profit_and_loss",
+    ]
+
+    if not prices_df.empty:
+        for (round_num, day_num), part in prices_df.groupby(["round", "day"], dropna=True):
+            round_num = int(round_num)
+            day_num = int(day_num)
+            round_dir = data_root / f"round{round_num}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+
+            out = part.copy()
+            for col in price_cols:
+                if col not in out.columns:
+                    out[col] = pd.NA
+            out = out[price_cols]
+            out.to_csv(
+                round_dir / f"prices_round_{round_num}_day_{day_num}.csv",
+                sep=";",
+                index=False,
+            )
+
+    if not trades_df.empty:
+        for (round_num, day_num), part in trades_df.groupby(["round", "day"], dropna=True):
+            round_num = int(round_num)
+            day_num = int(day_num)
+            round_dir = data_root / f"round{round_num}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+
+            out = part.copy()
+            if "product" in out.columns and "symbol" not in out.columns:
+                out = out.rename(columns={"product": "symbol"})
+
+            trade_cols = ["timestamp", "buyer", "seller", "symbol", "currency", "price", "quantity"]
+            for col in trade_cols:
+                if col not in out.columns:
+                    out[col] = pd.NA
+
+            out = out[trade_cols]
+            out.to_csv(
+                round_dir / f"trades_round_{round_num}_day_{day_num}.csv",
+                sep=";",
+                index=False,
+            )
+
+    return data_root
+
 
 def build_backtester_layout():
     return html.Div(
@@ -274,13 +349,13 @@ def register_backtester_callbacks(app):
                 "color": "#1d4f91",
             },
         )
-    
+
     @app.callback(
-    Output("backtest-targets-input", "value"),
-    Output("backtest-targets-input", "disabled"),
-    Input("backtest-preset-dropdown", "value"),
-    State("round-dropdown", "value"),
-    State("day-dropdown", "value"),
+        Output("backtest-targets-input", "value"),
+        Output("backtest-targets-input", "disabled"),
+        Input("backtest-preset-dropdown", "value"),
+        Input("round-dropdown", "value"),
+        Input("day-dropdown", "value"),
     )
     def sync_backtest_targets(preset, selected_round, selected_day):
         if preset == "manual":
@@ -294,6 +369,7 @@ def register_backtester_callbacks(app):
                 return f"{selected_round}-{selected_day}", True
             return "", True
         return "", False
+
     @app.callback(
         Output("backtest-status", "children"),
         Output("backtest-payload-store", "data"),
@@ -330,6 +406,19 @@ def register_backtester_callbacks(app):
             return _error_box("Upload a strategy file first."), {}
 
         try:
+            print(
+                "RUN BACKTEST CALLBACK:",
+                {
+                    "n_clicks": n_clicks,
+                    "strategy_filename": strategy_filename,
+                    "preset": preset,
+                    "targets_text": targets_text,
+                    "selected_round": selected_round,
+                    "selected_day": selected_day,
+                    "has_custom_uploads": bool(data_contents_list and data_filenames),
+                },
+            )
+
             limit_overrides = parse_limit_overrides(limit_text, preset)
 
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -391,6 +480,7 @@ def register_backtester_callbacks(app):
             return status, payload_data
 
         except Exception as exc:
+            print("RUN BACKTEST ERROR:", repr(exc))
             return _error_box(str(exc)), {}
 
     @app.callback(
@@ -535,7 +625,6 @@ def register_backtester_callbacks(app):
             "realized_trades.csv",
             index=False,
         )
-
 
 def _build_summary_cards(summary: dict):
     cards = [
@@ -785,6 +874,7 @@ def _make_product_pnl_figure(activity_df: pd.DataFrame, product: str) -> go.Figu
     return fig
 
 
+
 def _make_execution_figure(activity_df: pd.DataFrame, trades_df: pd.DataFrame) -> go.Figure:
     if activity_df.empty:
         return _empty_figure("No prices available from backtest activity log.")
@@ -792,10 +882,17 @@ def _make_execution_figure(activity_df: pd.DataFrame, trades_df: pd.DataFrame) -
     fig = go.Figure()
 
     for product, df_product in activity_df.groupby("product"):
+        df_plot = df_product.copy()
+        df_plot["mid_price"] = pd.to_numeric(df_plot["mid_price"], errors="coerce")
+        df_plot.loc[df_plot["mid_price"] <= 0, "mid_price"] = np.nan
+        df_plot = df_plot[df_plot["mid_price"].notna()]
+        if df_plot.empty:
+            continue
+
         fig.add_trace(
             go.Scatter(
-                x=df_product["global_step"],
-                y=df_product["mid_price"],
+                x=df_plot["global_step"],
+                y=df_plot["mid_price"],
                 mode="lines",
                 name=f"{product} mid",
             )
@@ -837,6 +934,12 @@ def _make_product_execution_figure(activity_df: pd.DataFrame, trades_df: pd.Data
     if product_activity.empty:
         return _empty_figure(f"No execution price data returned for {product}.")
 
+    product_activity["mid_price"] = pd.to_numeric(product_activity["mid_price"], errors="coerce")
+    product_activity.loc[product_activity["mid_price"] <= 0, "mid_price"] = np.nan
+    product_activity = product_activity[product_activity["mid_price"].notna()]
+    if product_activity.empty:
+        return _empty_figure(f"No valid execution price data returned for {product}.")
+
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -874,7 +977,6 @@ def _make_product_execution_figure(activity_df: pd.DataFrame, trades_df: pd.Data
     fig.update_xaxes(title_text="Global step")
     fig.update_yaxes(title_text="Price")
     return fig
-
 
 def _make_position_figure(trades_df: pd.DataFrame) -> go.Figure:
     if trades_df.empty:
@@ -939,6 +1041,7 @@ def _make_product_position_figure(trades_df: pd.DataFrame, product: str) -> go.F
     return fig
 
 
+
 def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_prefix: str) -> go.Figure:
     if activity_df.empty:
         return _empty_figure("No activity log data is available for this trade.")
@@ -968,33 +1071,41 @@ def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_p
 
     df = df.sort_values("timestamp").copy()
 
+    for col in ["bid_price_1", "ask_price_1", "mid_price"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df.loc[df[col] <= 0, col] = np.nan
+
     fig = go.Figure()
 
     if "bid_price_1" in df.columns and df["bid_price_1"].notna().any():
+        df_bid = df[df["bid_price_1"].notna()]
         fig.add_trace(
             go.Scatter(
-                x=df["timestamp"],
-                y=df["bid_price_1"],
+                x=df_bid["timestamp"],
+                y=df_bid["bid_price_1"],
                 mode="lines",
                 name="Bid 1",
             )
         )
 
     if "ask_price_1" in df.columns and df["ask_price_1"].notna().any():
+        df_ask = df[df["ask_price_1"].notna()]
         fig.add_trace(
             go.Scatter(
-                x=df["timestamp"],
-                y=df["ask_price_1"],
+                x=df_ask["timestamp"],
+                y=df_ask["ask_price_1"],
                 mode="lines",
                 name="Ask 1",
             )
         )
 
     if "mid_price" in df.columns and df["mid_price"].notna().any():
+        df_mid = df[df["mid_price"].notna()]
         fig.add_trace(
             go.Scatter(
-                x=df["timestamp"],
-                y=df["mid_price"],
+                x=df_mid["timestamp"],
+                y=df_mid["mid_price"],
                 mode="lines",
                 name="Mid Price",
                 line={"width": 3},
@@ -1069,7 +1180,6 @@ def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_p
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Price")
     return fig
-
 
 def _empty_figure(title: str) -> go.Figure:
     fig = go.Figure()
