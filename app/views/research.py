@@ -429,6 +429,7 @@ def _normalize_market_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+
 def _prepare_realized_trades_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [str(c).strip() for c in out.columns]
@@ -456,51 +457,20 @@ def _prepare_realized_trades_df(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
 
+    # Guarantee these columns exist so downstream filters never KeyError
     for col in ["product", "direction", "outcome"]:
-        if col in out.columns:
-            out[col] = out[col].astype(str).str.strip()
+        if col not in out.columns:
+            out[col] = pd.NA
+        out[col] = out[col].astype("string").str.strip()
 
     if "trade_id" not in out.columns:
         out["trade_id"] = np.arange(1, len(out) + 1)
 
-    if "outcome" not in out.columns or out["outcome"].isna().all():
-        if "pnl" in out.columns:
-            out["outcome"] = np.where(
-                out["pnl"] > 0, "win",
-                np.where(out["pnl"] < 0, "loss", "breakeven")
-            )
-
-    if "outcome" in out.columns:
-        out["outcome"] = out["outcome"].replace(
-            {
-                "Winner": "win",
-                "Loser": "loss",
-                "Breakeven": "breakeven",
-                "WIN": "win",
-                "LOSS": "loss",
-            }
-        ).astype(str)
-
-    if "outcome" in out.columns:
-        lower_outcome = out["outcome"].astype(str).str.lower()
-        out["win_flag"] = lower_outcome.isin(["win", "winner", "profit"]).astype(float)
-    else:
-        out["win_flag"] = (out["pnl"] > 0).astype(float)
-
-    if {"entry_price", "entry_mid_price"}.issubset(out.columns):
-        out["entry_vs_mid"] = out["entry_price"] - out["entry_mid_price"]
-    else:
-        out["entry_vs_mid"] = np.nan
-
-    if {"exit_price", "exit_mid_price"}.issubset(out.columns):
-        out["exit_vs_mid"] = out["exit_price"] - out["exit_mid_price"]
-    else:
-        out["exit_vs_mid"] = np.nan
-
-    out["abs_pnl"] = pd.to_numeric(out.get("pnl", np.nan), errors="coerce").abs()
+    if "win_flag" not in out.columns and "pnl" in out.columns:
+        pnl_num = pd.to_numeric(out["pnl"], errors="coerce")
+        out["win_flag"] = (pnl_num > 0).astype(float)
 
     return out
-
 
 def _prepare_market_df(df: pd.DataFrame) -> pd.DataFrame:
     out = _normalize_market_df(df)
@@ -645,20 +615,20 @@ def _merge_trades_with_market(trades_df: pd.DataFrame, market_df: pd.DataFrame) 
     return merged
 
 
+
 def _filter_research_df(df: pd.DataFrame, selected_products, selected_directions, selected_outcomes) -> pd.DataFrame:
     out = df.copy()
 
-    if selected_products:
+    if selected_products and "product" in out.columns:
         out = out[out["product"].isin(selected_products)]
 
-    if selected_directions:
+    if selected_directions and "direction" in out.columns:
         out = out[out["direction"].isin(selected_directions)]
 
-    if selected_outcomes:
+    if selected_outcomes and "outcome" in out.columns:
         out = out[out["outcome"].isin(selected_outcomes)]
 
     return out
-
 
 def _build_summary_cards(df: pd.DataFrame):
     total_trades = len(df)
