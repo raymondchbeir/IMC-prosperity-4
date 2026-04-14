@@ -192,11 +192,13 @@ def register_upload_callbacks(app):
                 controls_layout = build_shared_market_controls_layout()
                 overview_layout = build_market_overview_graphs_layout()
 
-                default_plugin = get_round_plugin(1)
+                default_round = session.available_rounds[0] if session.available_rounds else None
+                default_plugin = get_round_plugin(default_round)
+
                 round_layout = (
                     default_plugin.build_round_analysis_layout()
                     if default_plugin is not None
-                    else html.Div("No round plugin registered yet.")
+                    else html.Div("No round-specific plugin registered for the uploaded rounds.")
                 )
 
                 store_data = {

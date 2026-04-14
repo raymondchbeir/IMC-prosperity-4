@@ -274,7 +274,26 @@ def register_backtester_callbacks(app):
                 "color": "#1d4f91",
             },
         )
-
+    
+    @app.callback(
+    Output("backtest-targets-input", "value"),
+    Output("backtest-targets-input", "disabled"),
+    Input("backtest-preset-dropdown", "value"),
+    State("round-dropdown", "value"),
+    State("day-dropdown", "value"),
+    )
+    def sync_backtest_targets(preset, selected_round, selected_day):
+        if preset == "manual":
+            return "", False
+        if preset == "tutorial_round_0":
+            return "0", True
+        if preset == "selected_dashboard_round":
+            return (str(selected_round) if selected_round is not None else ""), True
+        if preset == "selected_dashboard_round_day":
+            if selected_round is not None and selected_day is not None:
+                return f"{selected_round}-{selected_day}", True
+            return "", True
+        return "", False
     @app.callback(
         Output("backtest-status", "children"),
         Output("backtest-payload-store", "data"),
