@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 from pathlib import Path
@@ -754,6 +755,7 @@ def _build_summary(
         "win_rate": win_rate,
         "average_win_per_trade": _safe_mean(winning_trades["pnl"]) if not winning_trades.empty else None,
         "average_win_pct": _safe_mean(winning_trades["return_pct"]) if not winning_trades.empty else None,
+        "extra_volume_pct": 0.0,
     }
     return summary, per_run, per_product
 
@@ -766,27 +768,43 @@ def run_backtests(
     api = _load_backtester_api()
 
     if custom_data_root is not None:
-        file_reader = api["FileSystemReader"](custom_data_root)
+        data_root = custom_data_root
     else:
-        file_reader = api["PackageResourcesReader"]()
+        project_root = Path(__file__).resolve().parents[2]
+        data_root = project_root / "data"
 
-    targets = resolve_targets(request, file_reader, api["has_day_data"])
-    results = []
+    file_reader = api["FileSystemReader"](data_root)
 
-    for target in targets:
-        trader = _instantiate_trader(strategy_path)
-        result = api["run_backtest"](
-            trader=trader,
-            file_reader=file_reader,
-            round_num=target.round_num,
-            day_num=target.day_num,
-            print_output=False,
-            trade_matching_mode=api["TradeMatchingMode"](request.match_trades),
-            no_names=False,
-            show_progress_bar=False,
-            limits_override=request.limit_overrides or None,
-        )
-        results.append(result)
+    extra_volume_pct = float(request.extra_volume_pct or 0.0)
+    if extra_volume_pct < 0:
+        raise ValueError("Extra volume percentage cannot be negative.")
+
+    previous_env_value = os.environ.get("PROSPERITY_EXTRA_VOLUME_PCT")
+    os.environ["PROSPERITY_EXTRA_VOLUME_PCT"] = str(extra_volume_pct)
+
+    try:
+        targets = resolve_targets(request, file_reader, api["has_day_data"])
+        results = []
+
+        for target in targets:
+            trader = _instantiate_trader(strategy_path)
+            result = api["run_backtest"](
+                trader=trader,
+                file_reader=file_reader,
+                round_num=target.round_num,
+                day_num=target.day_num,
+                print_output=False,
+                trade_matching_mode=api["TradeMatchingMode"](request.match_trades),
+                no_names=False,
+                show_progress_bar=False,
+                limits_override=request.limit_overrides or None,
+            )
+            results.append(result)
+    finally:
+        if previous_env_value is None:
+            os.environ.pop("PROSPERITY_EXTRA_VOLUME_PCT", None)
+        else:
+            os.environ["PROSPERITY_EXTRA_VOLUME_PCT"] = previous_env_value
 
     activity_df = _activity_logs_to_df(results)
     submission_trades_df = _submission_trades_to_df(results, activity_df)
@@ -798,6 +816,7 @@ def run_backtests(
         realized_trades_df,
         targets,
     )
+    summary["extra_volume_pct"] = extra_volume_pct
 
     return BacktestPayload(
         targets=targets,

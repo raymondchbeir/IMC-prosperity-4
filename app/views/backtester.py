@@ -184,6 +184,21 @@ def build_backtester_layout():
                         ],
                         style={"flex": "1"},
                     ),
+                    html.Div(
+                        [
+                            html.Label("Extra market access"),
+                            dcc.Dropdown(
+                                id="backtest-extra-volume-dropdown",
+                                options=[
+                                    {"label": "Off", "value": 0.0},
+                                    {"label": "+25% extra volume", "value": 0.25},
+                                ],
+                                value=0.0,
+                                clearable=False,
+                            ),
+                        ],
+                        style={"flex": "1"},
+                    ),
                 ],
                 style={"display": "flex", "gap": "16px", "flexWrap": "wrap", "marginBottom": "16px"},
             ),
@@ -382,6 +397,7 @@ def register_backtester_callbacks(app):
         State("backtest-targets-input", "value"),
         State("backtest-match-trades-dropdown", "value"),
         State("backtest-limit-overrides", "value"),
+        State("backtest-extra-volume-dropdown", "value"),
         State("round-dropdown", "value"),
         State("day-dropdown", "value"),
         prevent_initial_call=True,
@@ -396,6 +412,7 @@ def register_backtester_callbacks(app):
         targets_text,
         match_trades,
         limit_text,
+        extra_volume_pct,
         selected_round,
         selected_day,
     ):
@@ -415,6 +432,7 @@ def register_backtester_callbacks(app):
                     "targets_text": targets_text,
                     "selected_round": selected_round,
                     "selected_day": selected_day,
+                    "extra_volume_pct": extra_volume_pct,
                     "has_custom_uploads": bool(data_contents_list and data_filenames),
                 },
             )
@@ -441,6 +459,7 @@ def register_backtester_callbacks(app):
                     selected_day=selected_day,
                     limit_overrides=limit_overrides,
                     use_custom_data=custom_data_root is not None,
+                    extra_volume_pct=float(extra_volume_pct or 0.0),
                 )
                 payload = run_backtests(
                     strategy_path=strategy_path,
@@ -455,7 +474,10 @@ def register_backtester_callbacks(app):
                     html.Span(
                         "Using custom uploaded data."
                         if request.use_custom_data
-                        else "Using bundled backtester round data."
+                        else "Using local backtester round data."
+                    ),
+                    html.Span(
+                        f" Extra market access: {int(round(100 * float(payload.summary.get("extra_volume_pct", 0.0))))}%.",
                     ),
                 ],
                 style={
@@ -637,6 +659,7 @@ def _build_summary_cards(summary: dict):
         ("Average win / trade", _fmt_number(summary.get("average_win_per_trade"), decimals=2)),
         ("Win rate", _fmt_pct(summary.get("win_rate"))),
         ("Products traded", ", ".join(summary.get("products_traded", [])) or "None"),
+        ("Extra market access", f"{int(round(100 * float(summary.get("extra_volume_pct", 0.0))))}%"),
     ]
     return html.Div(
         [

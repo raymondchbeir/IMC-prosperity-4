@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """
-run_backtest_csv.py
+run_backtest.py
 
-Prosperity-style local backtest runner for the IMC CSV files you uploaded.
-
-Supported inputs
-----------------
-- prices_round_0_day_-2.csv
-- prices_round_0_day_-1.csv
-- trades_round_0_day_-2.csv
-- trades_round_0_day_-1.csv
-
-These files are semicolon-separated.
+Prosperity-style local backtest runner for IMC CSV files.
 
 What this runner does
 ---------------------
@@ -23,17 +14,17 @@ What this runner does
 - Simulates fills against visible best bid / best ask only
 - Tracks cash, positions, PnL, trade counts, and simple Sharpe
 
-Notes
------
-- This is a practical tuning runner, not a perfect exchange simulator.
-- Passive orders only fill if they cross the current best price.
-- Market trades are passed through as market_trades for strategies that inspect them.
+Extra market access
+-------------------
+Use --extra-volume-pct 0.25 to simulate 25% more visible quote volume
+in the order book. This augments the in-memory book your strategy sees.
 
 Example:
-python run_backtest_csv.py \
-  --strategy 57265_merged_best_emeralds_tomatoes.py \
-  --prices prices_round_0_day_-2.csv prices_round_0_day_-1.csv \
-  --trades trades_round_0_day_-2.csv trades_round_0_day_-1.csv \
+python run_backtest.py \
+  --strategy my_strategy.py \
+  --prices prices_round_2_day_-1.csv prices_round_2_day_0.csv prices_round_2_day_1.csv \
+  --trades trades_round_2_day_-1.csv trades_round_2_day_0.csv trades_round_2_day_1.csv \
+  --extra-volume-pct 0.25 \
   --json
 """
 
@@ -151,7 +142,7 @@ def load_strategy(strategy_path: Path):
 
 
 def _normalize_price_df(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, sep=';')
+    df = pd.read_csv(path, sep=";")
     df.columns = [c.strip() for c in df.columns]
 
     numeric_cols = [
@@ -169,7 +160,7 @@ def _normalize_price_df(path: Path) -> pd.DataFrame:
 
 
 def _normalize_trade_df(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, sep=';')
+    df = pd.read_csv(path, sep=";")
     df.columns = [c.strip() for c in df.columns]
 
     for col in ["timestamp", "price", "quantity"]:
@@ -200,7 +191,6 @@ def load_trade_rows(trade_paths: List[Path]) -> pd.DataFrame:
     for p in trade_paths:
         df = _normalize_trade_df(p)
 
-        # Infer day from filename like trades_round_0_day_-2.csv
         name = p.stem
         inferred_day = None
         if "_day_" in name:
@@ -219,7 +209,86 @@ def load_trade_rows(trade_paths: List[Path]) -> pd.DataFrame:
     return df
 
 
-def build_order_depth(row: pd.Series) -> OrderDepth:
+def _inject_extra_side_volume(
+    orders: Dict[int, int],
+    pct: float,
+    is_sell_side: bool,
+) -> Dict[int, int]:
+    """
+    Add extra visible quote volume to one side of the book.
+
+    Buy side stores positive quantities.
+    Sell side stores negative quantities.
+
+    This implementation:
+    - scales existing levels by about pct
+    - fixes rounding drift
+    - optionally inserts one interpolated level if there is a clean price gap
+    """
+    if not orders or pct <= 0:
+        return orders
+
+    updated = dict(orders)
+
+    if is_sell_side:
+        prices = sorted(updated.keys())
+        vols = [abs(updated[p]) for p in prices]
+    else:
+        prices = sorted(updated.keys(), reverse=True)
+        vols = [updated[p] for p in prices]
+
+    total_visible = sum(vols)
+    if total_visible <= 0:
+        return updated
+
+    extra_target = max(1, int(round(total_visible * pct)))
+
+    base_add = [0] * len(prices)
+    assigned = 0
+    for idx, vol in enumerate(vols):
+        add = int(round(vol * pct))
+        base_add[idx] = add
+        assigned += add
+
+    remaining = extra_target - assigned
+    idx = 0
+    while remaining > 0 and prices:
+        base_add[idx % len(prices)] += 1
+        remaining -= 1
+        idx += 1
+
+    for price, add in zip(prices, base_add):
+        if add <= 0:
+            continue
+        if is_sell_side:
+            updated[price] -= add
+        else:
+            updated[price] += add
+
+    if len(prices) >= 2:
+        gap_index = None
+        for i in range(len(prices) - 1):
+            gap = abs(prices[i] - prices[i + 1])
+            if gap >= 2:
+                gap_index = i
+                break
+
+        if gap_index is not None:
+            p1 = prices[gap_index]
+            p2 = prices[gap_index + 1]
+            new_price = (p1 + p2) // 2
+
+            if new_price not in updated:
+                inserted_qty = max(1, int(round(extra_target * 0.2)))
+                if is_sell_side:
+                    updated[new_price] = -inserted_qty
+                else:
+                    updated[new_price] = inserted_qty
+
+    return updated
+
+
+def build_order_depth(row: pd.Series, extra_volume_pct: float = 0.0) -> OrderDepth:
     buy_orders: Dict[int, int] = {}
     sell_orders: Dict[int, int] = {}
 
@@ -233,8 +302,19 @@ def build_order_depth(row: pd.Series) -> OrderDepth:
             buy_orders[int(bp)] = int(bv)
 
         if pd.notna(ap) and pd.notna(av):
-            # Prosperity convention: sell book quantities are negative
             sell_orders[int(ap)] = -int(av)
+
+    if extra_volume_pct > 0:
+        buy_orders = _inject_extra_side_volume(
+            orders=buy_orders,
+            pct=extra_volume_pct,
+            is_sell_side=False,
+        )
+        sell_orders = _inject_extra_side_volume(
+            orders=sell_orders,
+            pct=extra_volume_pct,
+            is_sell_side=True,
+        )
 
     return OrderDepth(buy_orders=buy_orders, sell_orders=sell_orders)
 
@@ -318,7 +398,12 @@ def simulate_fills_for_product(
     return fills, cash_delta
 
 
-def run_backtest(strategy_path: Path, price_paths: List[Path], trade_paths: List[Path]) -> Dict[str, Any]:
+def run_backtest(
+    strategy_path: Path,
+    price_paths: List[Path],
+    trade_paths: List[Path],
+    extra_volume_pct: float = 0.0,
+) -> Dict[str, Any]:
     trader = load_strategy(strategy_path)
     prices_df = load_price_rows(price_paths)
     trades_df = load_trade_rows(trade_paths)
@@ -335,10 +420,7 @@ def run_backtest(strategy_path: Path, price_paths: List[Path], trade_paths: List
     filled_volume_by_product: Dict[str, int] = defaultdict(int)
     last_depths: Dict[str, OrderDepth] = {}
 
-    listings = {
-        "EMERALDS": Listing("EMERALDS", "EMERALDS", "SEASHELLS"),
-        "TOMATOES": Listing("TOMATOES", "TOMATOES", "SEASHELLS"),
-    }
+    listings: Dict[str, Listing] = {}
 
     for (day, timestamp), group in grouped:
         order_depths: Dict[str, OrderDepth] = {}
@@ -346,11 +428,14 @@ def run_backtest(strategy_path: Path, price_paths: List[Path], trade_paths: List
 
         for _, row in group.iterrows():
             product = str(row["product"])
-            order_depths[product] = build_order_depth(row)
+
+            if product not in listings:
+                listings[product] = Listing(product, product, "SEASHELLS")
+
+            order_depths[product] = build_order_depth(row, extra_volume_pct=extra_volume_pct)
             observations[f"{product}_mid_price"] = float(row["mid_price"]) if pd.notna(row["mid_price"]) else None
             observations[f"{product}_day"] = int(day)
 
-        # Use unique global timestamp across multiple days
         global_timestamp = int((int(day) + 10) * 1_000_000 + int(timestamp))
 
         state = TradingState(
@@ -427,6 +512,7 @@ def run_backtest(strategy_path: Path, price_paths: List[Path], trade_paths: List
         "trade_count_by_product": dict(trade_count_by_product),
         "filled_volume_by_product": dict(filled_volume_by_product),
         "ticks": len(pnl_series),
+        "extra_volume_pct": extra_volume_pct,
     }
 
 
@@ -435,10 +521,24 @@ def main() -> None:
     parser.add_argument("--strategy", type=Path, required=True)
     parser.add_argument("--prices", type=Path, nargs="+", required=True, help="One or more prices CSV files")
     parser.add_argument("--trades", type=Path, nargs="*", default=[], help="Optional trade CSV files")
+    parser.add_argument(
+        "--extra-volume-pct",
+        type=float,
+        default=0.0,
+        help="Extra visible order-book volume to add, e.g. 0.25 for +25%%",
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON metrics")
     args = parser.parse_args()
 
-    metrics = run_backtest(args.strategy, args.prices, args.trades)
+    if args.extra_volume_pct < 0:
+        raise ValueError("--extra-volume-pct must be non-negative")
+
+    metrics = run_backtest(
+        strategy_path=args.strategy,
+        price_paths=args.prices,
+        trade_paths=args.trades,
+        extra_volume_pct=args.extra_volume_pct,
+    )
 
     if args.json:
         print(json.dumps(metrics))
@@ -449,8 +549,8 @@ def main() -> None:
         print(f"Trade count by product: {metrics['trade_count_by_product']}")
         print(f"Filled volume by product: {metrics['filled_volume_by_product']}")
         print(f"Ticks: {metrics['ticks']}")
+        print(f"Extra volume pct: {metrics['extra_volume_pct']:.2%}")
 
 
 if __name__ == "__main__":
     main()
-

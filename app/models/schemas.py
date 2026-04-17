@@ -23,6 +23,7 @@ class BacktestRequest:
     selected_day: int | None = None
     limit_overrides: dict[str, int] = field(default_factory=dict)
     use_custom_data: bool = False
+    extra_volume_pct: float = 0.0
 
 
 @dataclass(slots=True)
