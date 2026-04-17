@@ -115,14 +115,99 @@ def build_research_layout():
             ),
             dcc.Graph(id="research-pnl-by-outcome-graph"),
             dcc.Graph(id="research-hold-vs-pnl-graph"),
+            dcc.Graph(id="research-pnl-by-liquidity-graph"),
+            dcc.Graph(id="research-pnl-by-inventory-bucket-graph"),
             dcc.Graph(id="research-winrate-heatmap-graph"),
             dcc.Graph(id="research-pnl-heatmap-graph"),
+            dcc.Graph(id="research-pnl-by-exact-entry-spread-graph"),
+            html.Div(
+                [
+                    html.H4("Heatmap Bucket Diagnostics"),
+                    dag.AgGrid(
+                        id="research-heatmap-bucket-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={"pagination": True, "paginationPageSize": 50},
+                        style={"height": "420px", "width": "100%", "marginBottom": "20px"},
+                        className="ag-theme-alpine",
+                    ),
+                ]
+            ),
             html.Div(id="research-winner-loser-summary", style={"marginBottom": "20px"}),
             html.H3("Research V2: Entry Signal Diagnostics"),
             dcc.Graph(id="research-pnl-by-imbalance-z-graph"),
             dcc.Graph(id="research-winrate-z-heatmap-graph"),
             dcc.Graph(id="research-entry-z-boxplot-graph"),
             dcc.Graph(id="research-entry-z-scatter-graph"),
+            html.H3("Research V3: Trade Excursion Diagnostics"),
+            dcc.Graph(id="research-realized-vs-mfe-graph"),
+            dcc.Graph(id="research-realized-vs-mfe-by-spread-graph"),
+            dcc.Graph(id="research-capture-ratio-heatmap-graph"),
+            dcc.Graph(id="research-efficiency-gap-boxplot-graph"),
+            dcc.Graph(id="research-mfe-vs-hold-graph"),
+            dcc.Graph(id="research-mfe-vs-hold-core-regime-graph"),
+            dcc.Graph(id="research-mfe-vs-time-to-mfe-core-regime-graph"),
+            html.Div(
+                [
+                    html.H4("Early MFE Bucket Diagnostics"),
+                    dag.AgGrid(
+                        id="research-early-mfe-bucket-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={"pagination": True, "paginationPageSize": 25},
+                        style={"height": "320px", "width": "100%", "marginBottom": "20px"},
+                        className="ag-theme-alpine",
+                    ),
+                ]
+            ),
+            dcc.Graph(id="research-early-mfe-vs-capture-runner-graph"),
+            html.Div(
+                [
+                    html.H4("Top 20 MFE Trades in Spread Bucket 16 to 21"),
+                    dag.AgGrid(
+                        id="research-top-mfe-core-regime-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={"pagination": True, "paginationPageSize": 20},
+                        style={"height": "420px", "width": "100%", "marginBottom": "20px"},
+                        className="ag-theme-alpine",
+                    ),
+                ]
+            ),
+            dcc.Graph(id="research-mae-vs-realized-graph"),
+            dcc.Graph(id="research-capture-count-heatmap-graph"),
+            html.Div(
+                [
+                    html.H4("Top Spread Bucket Hold-Time Diagnostics"),
+                    dag.AgGrid(
+                        id="research-top-spread-hold-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={"pagination": True, "paginationPageSize": 25},
+                        style={"height": "340px", "width": "100%", "marginBottom": "20px"},
+                        className="ag-theme-alpine",
+                    ),
+                ]
+            ),
+            html.Div(
+                [
+                    html.H4("Largest Efficiency Gaps in Spread Bucket 16 to 21"),
+                    dag.AgGrid(
+                        id="research-efficiency-gap-examples-grid",
+                        columnDefs=[],
+                        rowData=[],
+                        defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                        dashGridOptions={"pagination": True, "paginationPageSize": 20},
+                        style={"height": "420px", "width": "100%", "marginBottom": "20px"},
+                        className="ag-theme-alpine",
+                    ),
+                ]
+            ),
+            dcc.Graph(id="research-realized-vs-mfe-spread-bucket-graph"),
             html.Div(
                 [
                     html.H4("Merged Trade Diagnostics"),
@@ -253,13 +338,37 @@ def register_research_callbacks(app):
         Output("research-summary-cards", "children"),
         Output("research-pnl-by-outcome-graph", "figure"),
         Output("research-hold-vs-pnl-graph", "figure"),
+        Output("research-pnl-by-liquidity-graph", "figure"),
+        Output("research-pnl-by-inventory-bucket-graph", "figure"),
         Output("research-winrate-heatmap-graph", "figure"),
         Output("research-pnl-heatmap-graph", "figure"),
+        Output("research-pnl-by-exact-entry-spread-graph", "figure"),
+        Output("research-heatmap-bucket-grid", "columnDefs"),
+        Output("research-heatmap-bucket-grid", "rowData"),
         Output("research-winner-loser-summary", "children"),
         Output("research-pnl-by-imbalance-z-graph", "figure"),
         Output("research-winrate-z-heatmap-graph", "figure"),
         Output("research-entry-z-boxplot-graph", "figure"),
         Output("research-entry-z-scatter-graph", "figure"),
+        Output("research-realized-vs-mfe-graph", "figure"),
+        Output("research-realized-vs-mfe-by-spread-graph", "figure"),
+        Output("research-capture-ratio-heatmap-graph", "figure"),
+        Output("research-efficiency-gap-boxplot-graph", "figure"),
+        Output("research-mfe-vs-hold-graph", "figure"),
+        Output("research-mfe-vs-hold-core-regime-graph", "figure"),
+        Output("research-mfe-vs-time-to-mfe-core-regime-graph", "figure"),
+        Output("research-early-mfe-bucket-grid", "columnDefs"),
+        Output("research-early-mfe-bucket-grid", "rowData"),
+        Output("research-early-mfe-vs-capture-runner-graph", "figure"),
+        Output("research-top-mfe-core-regime-grid", "columnDefs"),
+        Output("research-top-mfe-core-regime-grid", "rowData"),
+        Output("research-mae-vs-realized-graph", "figure"),
+        Output("research-capture-count-heatmap-graph", "figure"),
+        Output("research-top-spread-hold-grid", "columnDefs"),
+        Output("research-top-spread-hold-grid", "rowData"),
+        Output("research-efficiency-gap-examples-grid", "columnDefs"),
+        Output("research-efficiency-gap-examples-grid", "rowData"),
+        Output("research-realized-vs-mfe-spread-bucket-graph", "figure"),
         Output("research-trades-grid", "columnDefs"),
         Output("research-trades-grid", "rowData"),
         Input("research-merged-store", "data"),
@@ -271,7 +380,43 @@ def register_research_callbacks(app):
     def render_research_dashboard(store_rows, selected_products, selected_directions, selected_outcomes):
         if not store_rows:
             empty_fig = _empty_figure("Upload realized_trades.csv to begin.")
-            return html.Div(), empty_fig, empty_fig, empty_fig, empty_fig, html.Div(), empty_fig, empty_fig, empty_fig, empty_fig, [], []
+            return (
+                html.Div(),
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                [],
+                [],
+                html.Div(),
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                [],
+                [],
+                empty_fig,
+                empty_fig,
+                _early_mfe_bucket_table_columns(),
+                [],
+                empty_fig,
+                _top_mfe_core_regime_table_columns(),
+                [],
+                empty_fig,
+                _top_spread_hold_table_columns(),
+                [],
+                _efficiency_gap_examples_table_columns(),
+                [],
+                empty_fig,
+                [],
+                [],
+            )
 
         df = _prepare_realized_trades_df(pd.DataFrame(store_rows))
         df = _filter_research_df(df, selected_products, selected_directions, selected_outcomes)
@@ -284,10 +429,30 @@ def register_research_callbacks(app):
                 empty_fig,
                 empty_fig,
                 empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                _heatmap_bucket_table_columns(),
+                [],
                 html.Div(),
                 empty_fig,
                 empty_fig,
                 empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                _early_mfe_bucket_table_columns(),
+                [],
+                empty_fig,
+                _top_mfe_core_regime_table_columns(),
+                [],
+                empty_fig,
+                empty_fig,
+                _top_spread_hold_table_columns(),
+                [],
+                _efficiency_gap_examples_table_columns(),
+                [],
                 empty_fig,
                 _research_table_columns(df),
                 [],
@@ -304,6 +469,14 @@ def register_research_callbacks(app):
         hold_vs_pnl_fig = _safe_fig(
             lambda: _make_hold_vs_pnl_figure(df),
             "Could not render hold time vs PnL.",
+        )
+        pnl_by_liquidity_fig = _safe_fig(
+            lambda: _make_pnl_by_liquidity_figure(df),
+            "Could not render PnL by passive vs taker.",
+        )
+        pnl_by_inventory_bucket_fig = _safe_fig(
+            lambda: _make_pnl_by_inventory_bucket_figure(df),
+            "Could not render PnL by inventory bucket.",
         )
         winrate_heatmap_fig = _safe_fig(
             lambda: _make_heatmap_figure(
@@ -323,6 +496,12 @@ def register_research_callbacks(app):
             ),
             "Could not render PnL heatmap.",
         )
+        pnl_by_exact_entry_spread_fig = _safe_fig(
+            lambda: _make_pnl_by_exact_entry_spread_figure(df),
+            "Could not render PnL by exact entry spread.",
+        )
+        heatmap_bucket_cols = _safe_call(lambda: _heatmap_bucket_table_columns(), [])
+        heatmap_bucket_rows = _safe_call(lambda: _prepare_heatmap_bucket_rows(df), [])
         winner_loser_summary = _safe_call(
             lambda: _build_winner_loser_summary(df),
             html.Div("Could not render winner vs loser summary."),
@@ -343,6 +522,58 @@ def register_research_callbacks(app):
             lambda: _make_entry_z_scatter_figure(df),
             "Could not render entry z-score scatter.",
         )
+        realized_vs_mfe_fig = _safe_fig(
+            lambda: _make_realized_vs_mfe_figure(df),
+            "Could not render realized vs MFE scatter.",
+        )
+        realized_vs_mfe_by_spread_fig = _safe_fig(
+            lambda: _make_realized_vs_mfe_by_spread_figure(df),
+            "Could not render realized vs MFE by spread.",
+        )
+        capture_ratio_heatmap_fig = _safe_fig(
+            lambda: _make_capture_ratio_heatmap_figure(df),
+            "Could not render capture ratio heatmap.",
+        )
+        efficiency_gap_boxplot_fig = _safe_fig(
+            lambda: _make_efficiency_gap_boxplot_figure(df),
+            "Could not render efficiency gap boxplot.",
+        )
+        mfe_vs_hold_fig = _safe_fig(
+            lambda: _make_mfe_vs_hold_figure(df),
+            "Could not render MFE vs hold scatter.",
+        )
+        mfe_vs_hold_core_regime_fig = _safe_fig(
+            lambda: _make_mfe_vs_hold_core_regime_figure(df),
+            "Could not render MFE vs hold for spread 16 to 21.",
+        )
+        mfe_vs_time_to_mfe_core_regime_fig = _safe_fig(
+            lambda: _make_mfe_vs_time_to_mfe_core_regime_figure(df),
+            "Could not render MFE vs time-to-MFE for spread 16 to 21.",
+        )
+        early_mfe_bucket_cols = _safe_call(lambda: _early_mfe_bucket_table_columns(), [])
+        early_mfe_bucket_rows = _safe_call(lambda: _prepare_early_mfe_bucket_rows(df), [])
+        early_mfe_vs_capture_runner_fig = _safe_fig(
+            lambda: _make_early_mfe_vs_capture_runner_figure(df),
+            "Could not render early MFE vs capture ratio for runners.",
+        )
+        top_mfe_core_regime_cols = _safe_call(lambda: _top_mfe_core_regime_table_columns(), [])
+        top_mfe_core_regime_rows = _safe_call(lambda: _prepare_top_mfe_core_regime_rows(df), [])
+        mae_vs_realized_fig = _safe_fig(
+            lambda: _make_mae_vs_realized_figure(df),
+            "Could not render MAE vs realized scatter.",
+        )
+        capture_count_heatmap_fig = _safe_fig(
+            lambda: _make_capture_count_heatmap_figure(df),
+            "Could not render capture-ratio count heatmap.",
+        )
+        top_spread_hold_cols = _safe_call(lambda: _top_spread_hold_table_columns(), [])
+        top_spread_hold_rows = _safe_call(lambda: _prepare_top_spread_hold_rows(df), [])
+        efficiency_gap_example_cols = _safe_call(lambda: _efficiency_gap_examples_table_columns(), [])
+        efficiency_gap_example_rows = _safe_call(lambda: _prepare_efficiency_gap_example_rows(df), [])
+        realized_vs_mfe_spread_bucket_fig = _safe_fig(
+            lambda: _make_realized_vs_mfe_spread_bucket_figure(df),
+            "Could not render realized vs MFE by spread bucket.",
+        )
         grid_cols = _safe_call(lambda: _research_table_columns(df), [])
         grid_rows = _safe_call(lambda: _prepare_grid_rows(df), [])
 
@@ -350,13 +581,37 @@ def register_research_callbacks(app):
             summary_cards,
             pnl_by_outcome_fig,
             hold_vs_pnl_fig,
+            pnl_by_liquidity_fig,
+            pnl_by_inventory_bucket_fig,
             winrate_heatmap_fig,
             pnl_heatmap_fig,
+            pnl_by_exact_entry_spread_fig,
+            heatmap_bucket_cols,
+            heatmap_bucket_rows,
             winner_loser_summary,
             pnl_by_imbalance_z_fig,
             winrate_z_heatmap_fig,
             entry_z_boxplot_fig,
             entry_z_scatter_fig,
+            realized_vs_mfe_fig,
+            realized_vs_mfe_by_spread_fig,
+            capture_ratio_heatmap_fig,
+            efficiency_gap_boxplot_fig,
+            mfe_vs_hold_fig,
+            mfe_vs_hold_core_regime_fig,
+            mfe_vs_time_to_mfe_core_regime_fig,
+            early_mfe_bucket_cols,
+            early_mfe_bucket_rows,
+            early_mfe_vs_capture_runner_fig,
+            top_mfe_core_regime_cols,
+            top_mfe_core_regime_rows,
+            mae_vs_realized_fig,
+            capture_count_heatmap_fig,
+            top_spread_hold_cols,
+            top_spread_hold_rows,
+            efficiency_gap_example_cols,
+            efficiency_gap_example_rows,
+            realized_vs_mfe_spread_bucket_fig,
             grid_cols,
             grid_rows,
         )
@@ -452,6 +707,20 @@ def _prepare_realized_trades_df(df: pd.DataFrame) -> pd.DataFrame:
         "spread_z",
         "mid_z",
         "market_timestamp_at_entry",
+        "mfe_pnl",
+        "mae_pnl",
+        "capture_ratio",
+        "efficiency_gap",
+        "mfe_price_move",
+        "mae_price_move",
+        "mfe_timestamp",
+        "mae_timestamp",
+        "time_to_mfe_ticks",
+        "time_to_mae_ticks",
+        "market_rows_in_trade",
+        "early_mfe_pnl_10000",
+        "early_mfe_price_move_10000",
+        "time_to_runner",
     ]
     for col in numeric_cols:
         if col in out.columns:
@@ -466,11 +735,212 @@ def _prepare_realized_trades_df(df: pd.DataFrame) -> pd.DataFrame:
     if "trade_id" not in out.columns:
         out["trade_id"] = np.arange(1, len(out) + 1)
 
+    if "entry_vs_mid" not in out.columns and {"entry_price", "entry_mid_price"}.issubset(out.columns):
+        out["entry_vs_mid"] = pd.to_numeric(out["entry_price"], errors="coerce") - pd.to_numeric(out["entry_mid_price"], errors="coerce")
+
+    if "exit_vs_mid" not in out.columns and {"exit_price", "exit_mid_price"}.issubset(out.columns):
+        out["exit_vs_mid"] = pd.to_numeric(out["exit_price"], errors="coerce") - pd.to_numeric(out["exit_mid_price"], errors="coerce")
+
     if "win_flag" not in out.columns and "pnl" in out.columns:
         pnl_num = pd.to_numeric(out["pnl"], errors="coerce")
         out["win_flag"] = (pnl_num > 0).astype(float)
 
+    out = _add_liquidity_tags(out)
+    out = _add_inventory_context(out)
+
+    if {"pnl", "mfe_pnl"}.issubset(out.columns):
+        pnl_num = pd.to_numeric(out["pnl"], errors="coerce")
+        mfe_num = pd.to_numeric(out["mfe_pnl"], errors="coerce")
+        if "capture_ratio" not in out.columns or out["capture_ratio"].isna().all():
+            out["capture_ratio"] = pnl_num / mfe_num.replace(0, np.nan)
+        if "efficiency_gap" not in out.columns or out["efficiency_gap"].isna().all():
+            out["efficiency_gap"] = mfe_num - pnl_num
+
+    runner_mfe_threshold = 35.0
+    runner_min_hold = 12000.0
+    if {"mfe_pnl", "hold_ticks"}.issubset(out.columns):
+        mfe_num = pd.to_numeric(out["mfe_pnl"], errors="coerce")
+        hold_num = pd.to_numeric(out["hold_ticks"], errors="coerce")
+        out["runner_flag"] = ((mfe_num >= runner_mfe_threshold) & (hold_num >= runner_min_hold)).fillna(False)
+    elif "runner_flag" not in out.columns:
+        out["runner_flag"] = False
+
+    if "runner_flag" in out.columns:
+        out["runner_flag"] = out["runner_flag"].fillna(False).astype(bool)
+
+    if "time_to_runner" not in out.columns:
+        if "time_to_mfe_ticks" in out.columns and "runner_flag" in out.columns:
+            ttm_num = pd.to_numeric(out["time_to_mfe_ticks"], errors="coerce")
+            hold_num = pd.to_numeric(out["hold_ticks"], errors="coerce") if "hold_ticks" in out.columns else pd.Series(np.nan, index=out.index)
+            approx = np.where(pd.notna(ttm_num), np.minimum(ttm_num, hold_num), hold_num * 0.4)
+            out["time_to_runner"] = np.where(out["runner_flag"], approx, np.nan)
+        elif "hold_ticks" in out.columns:
+            hold_num = pd.to_numeric(out["hold_ticks"], errors="coerce")
+            out["time_to_runner"] = np.where(out["runner_flag"], hold_num * 0.4, np.nan)
+
+    if "entry_spread" in out.columns and "entry_spread_bucket" not in out.columns:
+        out["entry_spread_bucket"] = _spread_bucket_label(out["entry_spread"])
+
     return out
+
+
+
+def _normalize_liquidity_label(value) -> str | None:
+    if pd.isna(value):
+        return None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    taker_tokens = ["taker", "take", "aggressive", "cross", "crossed", "market", "remove", "removed"]
+    passive_tokens = ["maker", "passive", "rest", "resting", "posted", "provide", "provided", "limit"]
+    if any(tok in s for tok in taker_tokens):
+        return "taker"
+    if any(tok in s for tok in passive_tokens):
+        return "passive"
+    return None
+
+
+def _infer_leg_liquidity(row: pd.Series, leg: str) -> str | None:
+    candidate_cols = [
+        f"{leg}_liquidity",
+        f"{leg}_execution_type",
+        f"{leg}_order_type",
+        f"{leg}_maker_taker",
+        f"{leg}_passive_taker",
+    ]
+    for col in candidate_cols:
+        if col in row.index:
+            label = _normalize_liquidity_label(row.get(col))
+            if label:
+                return label
+
+    price_col = f"{leg}_price"
+    mid_col = f"{leg}_mid_price"
+    spread_col = f"{leg}_spread"
+
+    if not {price_col, mid_col}.issubset(row.index):
+        return None
+
+    price = pd.to_numeric(row.get(price_col), errors="coerce")
+    mid = pd.to_numeric(row.get(mid_col), errors="coerce")
+    spread = pd.to_numeric(row.get(spread_col), errors="coerce") if spread_col in row.index else np.nan
+    direction = str(row.get("direction", "")).strip().lower()
+
+    if not (pd.notna(price) and pd.notna(mid) and direction):
+        return None
+
+    tol = 1e-9
+    half_spread = spread / 2.0 if pd.notna(spread) else np.nan
+
+    if leg == "entry":
+        if direction == "buy":
+            if pd.notna(half_spread) and price >= mid + half_spread - tol:
+                return "taker"
+            if price <= mid + tol:
+                return "passive"
+        if direction == "sell":
+            if pd.notna(half_spread) and price <= mid - half_spread + tol:
+                return "taker"
+            if price >= mid - tol:
+                return "passive"
+    else:
+        if direction == "buy":
+            if pd.notna(half_spread) and price <= mid - half_spread + tol:
+                return "taker"
+            if price >= mid - tol:
+                return "passive"
+        if direction == "sell":
+            if pd.notna(half_spread) and price >= mid + half_spread - tol:
+                return "taker"
+            if price <= mid + tol:
+                return "passive"
+
+    if pd.notna(half_spread):
+        if abs(price - mid) >= max(abs(half_spread) * 0.75, tol):
+            return "taker"
+        return "passive"
+
+    return None
+
+
+def _add_liquidity_tags(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    if "entry_liquidity_bucket" not in out.columns:
+        out["entry_liquidity_bucket"] = out.apply(lambda row: _infer_leg_liquidity(row, "entry"), axis=1)
+
+    if "exit_liquidity_bucket" not in out.columns:
+        out["exit_liquidity_bucket"] = out.apply(lambda row: _infer_leg_liquidity(row, "exit"), axis=1)
+
+    if "round_trip_liquidity_bucket" not in out.columns:
+        def _combine(row):
+            entry = row.get("entry_liquidity_bucket")
+            exit_ = row.get("exit_liquidity_bucket")
+            if entry and exit_:
+                if entry == "passive" and exit_ == "passive":
+                    return "passive / passive"
+                if entry == "taker" and exit_ == "taker":
+                    return "taker / taker"
+                if entry == "passive" and exit_ == "taker":
+                    return "passive entry / taker exit"
+                if entry == "taker" and exit_ == "passive":
+                    return "taker entry / passive exit"
+            if entry:
+                return f"entry: {entry}"
+            if exit_:
+                return f"exit: {exit_}"
+            return "unknown"
+        out["round_trip_liquidity_bucket"] = out.apply(_combine, axis=1)
+
+    return out
+
+
+def _add_inventory_context(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    inventory_candidates = [
+        "inventory_before_entry",
+        "entry_inventory",
+        "inventory_at_entry",
+        "position_before",
+        "start_inventory",
+        "starting_inventory",
+        "inventory_before",
+        "inventory",
+    ]
+
+    inventory_col = next((col for col in inventory_candidates if col in out.columns), None)
+
+    if inventory_col:
+        out["inventory_reference"] = pd.to_numeric(out[inventory_col], errors="coerce")
+    else:
+        sort_cols = [c for c in ["product", "entry_timestamp", "exit_timestamp", "trade_id"] if c in out.columns]
+        if sort_cols:
+            ordered = out.sort_values(sort_cols).copy()
+            ordered_signed = pd.to_numeric(ordered.get("quantity"), errors="coerce").fillna(0.0)
+            ordered_direction = ordered.get("direction", pd.Series(index=ordered.index, dtype="object")).astype("string").str.lower()
+            ordered_sign = np.where(ordered_direction.eq("sell"), -1.0, 1.0)
+            product_group = ordered["product"] if "product" in ordered.columns else pd.Series("__all__", index=ordered.index)
+            ordered["inventory_reference"] = (ordered_signed * ordered_sign).groupby(product_group).cumsum().shift(fill_value=0.0)
+            out = ordered.sort_index()
+        else:
+            signed_qty = pd.to_numeric(out.get("quantity"), errors="coerce").fillna(0.0)
+            direction = out.get("direction", pd.Series(index=out.index, dtype="object")).astype("string").str.lower()
+            sign = np.where(direction.eq("sell"), -1.0, 1.0)
+            out["inventory_reference"] = (signed_qty * sign).cumsum().shift(fill_value=0.0)
+
+    out["inventory_reference"] = pd.to_numeric(out["inventory_reference"], errors="coerce")
+    out["inventory_abs"] = out["inventory_reference"].abs()
+
+    if out["inventory_abs"].notna().sum() >= 5:
+        bins = [-np.inf, 0.5, 10, 25, 50, 80, np.inf]
+        labels = ["0", "1-10", "11-25", "26-50", "51-80", "80+"]
+        out["inventory_bucket"] = pd.cut(out["inventory_abs"], bins=bins, labels=labels, include_lowest=True)
+    else:
+        out["inventory_bucket"] = pd.Series(["unknown"] * len(out), index=out.index, dtype="string")
+
+    return out
+
 
 def _prepare_market_df(df: pd.DataFrame) -> pd.DataFrame:
     out = _normalize_market_df(df)
@@ -612,6 +1082,13 @@ def _merge_trades_with_market(trades_df: pd.DataFrame, market_df: pd.DataFrame) 
     if "timestamp" in merged.columns:
         merged = merged.rename(columns={"timestamp": "market_timestamp_at_entry"})
 
+    try:
+        excursions = _compute_trade_excursions(left, market_df)
+        if not excursions.empty and "trade_id" in merged.columns:
+            merged = merged.merge(excursions, on="trade_id", how="left")
+    except Exception:
+        pass
+
     return merged
 
 
@@ -641,6 +1118,11 @@ def _build_summary_cards(df: pd.DataFrame):
     avg_exit_spread = pd.to_numeric(df["exit_spread"], errors="coerce").mean()
     z_coverage = 100.0 * df["imbalance_z"].notna().mean() if "imbalance_z" in df.columns else 0.0
 
+    avg_mfe = pd.to_numeric(df["mfe_pnl"], errors="coerce").mean() if "mfe_pnl" in df.columns else np.nan
+    avg_mae = pd.to_numeric(df["mae_pnl"], errors="coerce").mean() if "mae_pnl" in df.columns else np.nan
+    avg_capture_ratio = pd.to_numeric(df["capture_ratio"], errors="coerce").mean() if "capture_ratio" in df.columns else np.nan
+    avg_efficiency_gap = pd.to_numeric(df["efficiency_gap"], errors="coerce").mean() if "efficiency_gap" in df.columns else np.nan
+
     cards = [
         ("Trades", f"{total_trades:,}"),
         ("Total PnL", _fmt_number(total_pnl)),
@@ -650,6 +1132,10 @@ def _build_summary_cards(df: pd.DataFrame):
         ("Average Hold Ticks", _fmt_number(avg_hold)),
         ("Average Entry Spread", _fmt_number(avg_entry_spread)),
         ("Average Exit Spread", _fmt_number(avg_exit_spread)),
+        ("Average MFE", _fmt_number(avg_mfe)),
+        ("Average MAE", _fmt_number(avg_mae)),
+        ("Average Capture Ratio", _fmt_pct(100.0 * avg_capture_ratio if pd.notna(avg_capture_ratio) else np.nan)),
+        ("Average Efficiency Gap", _fmt_number(avg_efficiency_gap)),
         ("Z-Score Coverage", _fmt_pct(z_coverage)),
     ]
 
@@ -687,6 +1173,14 @@ def _build_winner_loser_summary(df: pd.DataFrame):
             rows.append(f"Avg Spread Z: {_fmt_number(pd.to_numeric(frame['spread_z'], errors='coerce').mean())}")
         if "mid_z" in frame.columns:
             rows.append(f"Avg Mid Z: {_fmt_number(pd.to_numeric(frame['mid_z'], errors='coerce').mean())}")
+        if "mfe_pnl" in frame.columns:
+            rows.append(f"Avg MFE: {_fmt_number(pd.to_numeric(frame['mfe_pnl'], errors='coerce').mean())}")
+        if "mae_pnl" in frame.columns:
+            rows.append(f"Avg MAE: {_fmt_number(pd.to_numeric(frame['mae_pnl'], errors='coerce').mean())}")
+        if "capture_ratio" in frame.columns:
+            rows.append(f"Avg Capture Ratio: {_fmt_pct(100.0 * pd.to_numeric(frame['capture_ratio'], errors='coerce').mean())}")
+        if "efficiency_gap" in frame.columns:
+            rows.append(f"Avg Efficiency Gap: {_fmt_number(pd.to_numeric(frame['efficiency_gap'], errors='coerce').mean())}")
 
         return html.Div(
             [html.H4(label)] + [html.P(r) for r in rows],
@@ -806,18 +1300,151 @@ def _make_hold_vs_pnl_figure(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+
+
+def _make_pnl_by_liquidity_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    if "round_trip_liquidity_bucket" not in work.columns or "pnl" not in work.columns:
+        return _empty_figure("No passive/taker data available.")
+
+    work["pnl"] = pd.to_numeric(work["pnl"], errors="coerce")
+    work = work.dropna(subset=["pnl"]).copy()
+    work["round_trip_liquidity_bucket"] = work["round_trip_liquidity_bucket"].fillna("unknown").astype(str)
+
+    if work.empty:
+        return _empty_figure("No passive/taker data available.")
+
+    order = [
+        "passive / passive",
+        "passive entry / taker exit",
+        "taker entry / passive exit",
+        "taker / taker",
+        "entry: passive",
+        "entry: taker",
+        "exit: passive",
+        "exit: taker",
+        "unknown",
+    ]
+
+    grouped = (
+        work.groupby("round_trip_liquidity_bucket", as_index=False)
+        .agg(
+            total_pnl=("pnl", "sum"),
+            avg_pnl=("pnl", "mean"),
+            trades=("pnl", "size"),
+        )
+    )
+    grouped["sort_key"] = grouped["round_trip_liquidity_bucket"].apply(lambda x: order.index(x) if x in order else 999)
+    grouped = grouped.sort_values(["sort_key", "round_trip_liquidity_bucket"]).copy()
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=grouped["round_trip_liquidity_bucket"],
+            y=grouped["total_pnl"],
+            name="Total PnL",
+            customdata=np.column_stack([grouped["avg_pnl"], grouped["trades"]]),
+            hovertemplate="Bucket=%{x}<br>Total PnL=%{y:.2f}<br>Avg PnL=%{customdata[0]:.2f}<br>Trades=%{customdata[1]}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["round_trip_liquidity_bucket"],
+            y=grouped["avg_pnl"],
+            mode="lines+markers",
+            name="Avg PnL / trade",
+            yaxis="y2",
+            customdata=np.column_stack([grouped["total_pnl"], grouped["trades"]]),
+            hovertemplate="Bucket=%{x}<br>Avg PnL=%{y:.2f}<br>Total PnL=%{customdata[0]:.2f}<br>Trades=%{customdata[1]}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title="PnL by Passive vs Taker",
+        template="plotly_white",
+        height=420,
+        margin={"l": 50, "r": 50, "t": 60, "b": 90},
+        yaxis={"title": "Total PnL"},
+        yaxis2={"title": "Average PnL / trade", "overlaying": "y", "side": "right"},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    )
+    fig.update_xaxes(title_text="Liquidity Bucket")
+    return fig
+
+
+def _make_pnl_by_inventory_bucket_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    if "inventory_bucket" not in work.columns or "pnl" not in work.columns:
+        return _empty_figure("No inventory data available.")
+
+    work["pnl"] = pd.to_numeric(work["pnl"], errors="coerce")
+    work["inventory_abs"] = pd.to_numeric(work.get("inventory_abs"), errors="coerce")
+    work = work.dropna(subset=["pnl"]).copy()
+
+    if work.empty:
+        return _empty_figure("No inventory data available.")
+
+    grouped = (
+        work.groupby("inventory_bucket", observed=False, as_index=False)
+        .agg(
+            total_pnl=("pnl", "sum"),
+            avg_pnl=("pnl", "mean"),
+            trades=("pnl", "size"),
+            avg_inventory=("inventory_abs", "mean"),
+        )
+    )
+    grouped["inventory_bucket"] = grouped["inventory_bucket"].astype(str)
+    order = ["0", "1-10", "11-25", "26-50", "51-80", "80+", "unknown"]
+    grouped["sort_key"] = grouped["inventory_bucket"].apply(lambda x: order.index(x) if x in order else 999)
+    grouped = grouped.sort_values(["sort_key", "inventory_bucket"]).copy()
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=grouped["inventory_bucket"],
+            y=grouped["total_pnl"],
+            name="Total PnL",
+            customdata=np.column_stack([grouped["avg_pnl"], grouped["trades"], grouped["avg_inventory"]]),
+            hovertemplate="Bucket=%{x}<br>Total PnL=%{y:.2f}<br>Avg PnL=%{customdata[0]:.2f}<br>Trades=%{customdata[1]}<br>Avg |inventory|=%{customdata[2]:.2f}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["inventory_bucket"],
+            y=grouped["avg_pnl"],
+            mode="lines+markers",
+            name="Avg PnL / trade",
+            yaxis="y2",
+            customdata=np.column_stack([grouped["total_pnl"], grouped["trades"], grouped["avg_inventory"]]),
+            hovertemplate="Bucket=%{x}<br>Avg PnL=%{y:.2f}<br>Total PnL=%{customdata[0]:.2f}<br>Trades=%{customdata[1]}<br>Avg |inventory|=%{customdata[2]:.2f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title="PnL by Inventory Bucket",
+        template="plotly_white",
+        height=420,
+        margin={"l": 50, "r": 50, "t": 60, "b": 70},
+        yaxis={"title": "Total PnL"},
+        yaxis2={"title": "Average PnL / trade", "overlaying": "y", "side": "right"},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    )
+    fig.update_xaxes(title_text="Absolute Inventory Bucket")
+    return fig
+
+
 def _make_heatmap_figure(df: pd.DataFrame, value_col: str, title: str, value_title: str) -> go.Figure:
     work = df.copy()
 
-    for col in ["hold_ticks", "entry_spread", value_col]:
+    required = ["hold_ticks", "entry_spread", "pnl", "win_flag", value_col]
+    for col in required:
         if col not in work.columns:
             return _empty_figure(title)
 
-    work["hold_ticks"] = pd.to_numeric(work["hold_ticks"], errors="coerce")
-    work["entry_spread"] = pd.to_numeric(work["entry_spread"], errors="coerce")
-    work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+    for col in required:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
 
-    work = work.dropna(subset=["hold_ticks", "entry_spread", value_col]).copy()
+    work = work.dropna(subset=["hold_ticks", "entry_spread", "pnl", "win_flag", value_col]).copy()
     if work.empty:
         return _empty_figure(title)
 
@@ -831,22 +1458,88 @@ def _make_heatmap_figure(df: pd.DataFrame, value_col: str, title: str, value_tit
     except Exception:
         work["spread_bucket"] = pd.cut(work["entry_spread"], bins=6)
 
-    heat = (
-        work.groupby(["hold_bucket", "spread_bucket"], observed=False)[value_col]
-        .mean()
+    bucket_stats = (
+        work.groupby(["spread_bucket", "hold_bucket"], observed=False)
+        .agg(
+            trade_count=("pnl", "size"),
+            avg_pnl=("pnl", "mean"),
+            median_pnl=("pnl", "median"),
+            win_rate=("win_flag", "mean"),
+            total_pnl=("pnl", "sum"),
+            heat_value=(value_col, "mean"),
+        )
         .reset_index()
-        .pivot(index="spread_bucket", columns="hold_bucket", values=value_col)
     )
 
-    if heat.empty:
+    if bucket_stats.empty:
         return _empty_figure(title)
+
+    z_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="heat_value",
+    )
+    count_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="trade_count",
+    )
+    avg_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="avg_pnl",
+    )
+    median_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="median_pnl",
+    )
+    win_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="win_rate",
+    )
+    total_pivot = bucket_stats.pivot(
+        index="spread_bucket",
+        columns="hold_bucket",
+        values="total_pnl",
+    )
+
+    count_pivot = count_pivot.reindex(index=z_pivot.index, columns=z_pivot.columns)
+    avg_pivot = avg_pivot.reindex(index=z_pivot.index, columns=z_pivot.columns)
+    median_pivot = median_pivot.reindex(index=z_pivot.index, columns=z_pivot.columns)
+    win_pivot = win_pivot.reindex(index=z_pivot.index, columns=z_pivot.columns)
+    total_pivot = total_pivot.reindex(index=z_pivot.index, columns=z_pivot.columns)
+
+    customdata = np.dstack(
+        [
+            count_pivot.fillna(0).to_numpy(),
+            avg_pivot.to_numpy(),
+            median_pivot.to_numpy(),
+            win_pivot.to_numpy(),
+            total_pivot.to_numpy(),
+        ]
+    )
+
+    hovertemplate = (
+        "Hold Bucket=%{x}<br>"
+        "Entry Spread Bucket=%{y}<br>"
+        f"{value_title}=%{{z:.4f}}<br>"
+        "Trade Count=%{customdata[0]:,.0f}<br>"
+        "Avg PnL=%{customdata[1]:.4f}<br>"
+        "Median PnL=%{customdata[2]:.4f}<br>"
+        "Win Rate=%{customdata[3]:.2%}<br>"
+        "Total PnL=%{customdata[4]:.4f}<extra></extra>"
+    )
 
     fig = go.Figure(
         data=go.Heatmap(
-            z=heat.values,
-            x=[str(c) for c in heat.columns],
-            y=[str(i) for i in heat.index],
+            z=z_pivot.to_numpy(),
+            x=[str(c) for c in z_pivot.columns],
+            y=[str(i) for i in z_pivot.index],
+            customdata=customdata,
             colorbar={"title": value_title},
+            hovertemplate=hovertemplate,
         )
     )
 
@@ -858,6 +1551,191 @@ def _make_heatmap_figure(df: pd.DataFrame, value_col: str, title: str, value_tit
     )
     fig.update_xaxes(title_text="Hold Time Bucket")
     fig.update_yaxes(title_text="Entry Spread Bucket")
+    return fig
+
+
+def _build_heatmap_bucket_stats(df: pd.DataFrame) -> pd.DataFrame:
+    work = df.copy()
+
+    required = ["hold_ticks", "entry_spread", "pnl", "win_flag"]
+    for col in required:
+        if col not in work.columns:
+            return pd.DataFrame()
+
+    for col in required:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work.dropna(subset=required).copy()
+    if work.empty:
+        return pd.DataFrame()
+
+    try:
+        work["hold_bucket"] = pd.qcut(work["hold_ticks"], q=6, duplicates="drop")
+    except Exception:
+        work["hold_bucket"] = pd.cut(work["hold_ticks"], bins=6)
+
+    try:
+        work["spread_bucket"] = pd.qcut(work["entry_spread"], q=6, duplicates="drop")
+    except Exception:
+        work["spread_bucket"] = pd.cut(work["entry_spread"], bins=6)
+
+    stats = (
+        work.groupby(["spread_bucket", "hold_bucket"], observed=False)
+        .agg(
+            trade_count=("pnl", "size"),
+            avg_pnl=("pnl", "mean"),
+            median_pnl=("pnl", "median"),
+            win_rate=("win_flag", "mean"),
+            total_pnl=("pnl", "sum"),
+        )
+        .reset_index()
+    )
+
+    if stats.empty:
+        return pd.DataFrame()
+
+    stats["spread_bucket"] = stats["spread_bucket"].astype(str)
+    stats["hold_bucket"] = stats["hold_bucket"].astype(str)
+    stats["win_rate_pct"] = 100.0 * stats["win_rate"]
+
+    return stats
+
+
+def _heatmap_bucket_table_columns() -> list[dict]:
+    return [
+        {"field": "spread_bucket", "headerName": "Entry Spread Bucket", "flex": 2},
+        {"field": "hold_bucket", "headerName": "Hold Time Bucket", "flex": 2},
+        {"field": "trade_count", "headerName": "Trade Count", "flex": 1},
+        {"field": "avg_pnl", "headerName": "Average PnL", "flex": 1},
+        {"field": "median_pnl", "headerName": "Median PnL", "flex": 1},
+        {"field": "win_rate_pct", "headerName": "Win Rate %", "flex": 1},
+        {"field": "total_pnl", "headerName": "Total PnL", "flex": 1},
+    ]
+
+
+def _prepare_heatmap_bucket_rows(df: pd.DataFrame) -> list[dict]:
+    stats = _build_heatmap_bucket_stats(df)
+    if stats.empty:
+        return []
+
+    stats = stats.sort_values(
+        by=["spread_bucket", "hold_bucket"],
+        ascending=[True, True],
+    ).copy()
+
+    for col in ["avg_pnl", "median_pnl", "win_rate_pct", "total_pnl"]:
+        if col in stats.columns:
+            stats[col] = pd.to_numeric(stats[col], errors="coerce").round(4)
+
+    return stats[
+        [
+            "spread_bucket",
+            "hold_bucket",
+            "trade_count",
+            "avg_pnl",
+            "median_pnl",
+            "win_rate_pct",
+            "total_pnl",
+        ]
+    ].to_dict("records")
+
+
+def _make_pnl_by_exact_entry_spread_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+
+    required = ["entry_spread", "pnl", "win_flag"]
+    for col in required:
+        if col not in work.columns:
+            return _empty_figure("PnL by exact entry spread")
+
+    for col in required:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work.dropna(subset=["entry_spread", "pnl", "win_flag"]).copy()
+    if work.empty:
+        return _empty_figure("PnL by exact entry spread")
+
+    rounded = work["entry_spread"].round()
+    if np.all(np.isclose(work["entry_spread"], rounded, atol=1e-9)):
+        work["entry_spread_exact"] = rounded.astype(int)
+    else:
+        work["entry_spread_exact"] = work["entry_spread"].round(4)
+
+    grouped = (
+        work.groupby("entry_spread_exact", as_index=False)
+        .agg(
+            trade_count=("pnl", "size"),
+            total_pnl=("pnl", "sum"),
+            avg_pnl=("pnl", "mean"),
+            median_pnl=("pnl", "median"),
+            win_rate=("win_flag", "mean"),
+        )
+        .sort_values("entry_spread_exact")
+    )
+
+    if grouped.empty:
+        return _empty_figure("PnL by exact entry spread")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=grouped["entry_spread_exact"],
+            y=grouped["total_pnl"],
+            name="Total PnL",
+            customdata=np.column_stack(
+                [
+                    grouped["trade_count"],
+                    grouped["avg_pnl"],
+                    grouped["median_pnl"],
+                    grouped["win_rate"],
+                ]
+            ),
+            hovertemplate=(
+                "Entry Spread=%{x}<br>"
+                "Total PnL=%{y:.4f}<br>"
+                "Trade Count=%{customdata[0]:,.0f}<br>"
+                "Avg PnL=%{customdata[1]:.4f}<br>"
+                "Median PnL=%{customdata[2]:.4f}<br>"
+                "Win Rate=%{customdata[3]:.2%}<extra></extra>"
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["entry_spread_exact"],
+            y=grouped["avg_pnl"],
+            mode="lines+markers",
+            name="Avg PnL / trade",
+            yaxis="y2",
+            customdata=np.column_stack(
+                [
+                    grouped["trade_count"],
+                    grouped["total_pnl"],
+                    grouped["median_pnl"],
+                    grouped["win_rate"],
+                ]
+            ),
+            hovertemplate=(
+                "Entry Spread=%{x}<br>"
+                "Avg PnL=%{y:.4f}<br>"
+                "Trade Count=%{customdata[0]:,.0f}<br>"
+                "Total PnL=%{customdata[1]:.4f}<br>"
+                "Median PnL=%{customdata[2]:.4f}<br>"
+                "Win Rate=%{customdata[3]:.2%}<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title="PnL by Exact Entry Spread",
+        template="plotly_white",
+        height=420,
+        margin={"l": 50, "r": 50, "t": 60, "b": 70},
+        yaxis={"title": "Total PnL"},
+        yaxis2={"title": "Average PnL / trade", "overlaying": "y", "side": "right"},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    )
+    fig.update_xaxes(title_text="Exact Entry Spread")
     return fig
 
 
@@ -1072,6 +1950,887 @@ def _make_entry_z_scatter_figure(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+
+def _compute_trade_excursions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
+    if trades_df.empty or market_df.empty:
+        return pd.DataFrame()
+
+    if "trade_id" not in trades_df.columns:
+        working = trades_df.copy()
+        working["trade_id"] = np.arange(1, len(working) + 1)
+    else:
+        working = trades_df.copy()
+
+    market = _prepare_market_df(market_df.copy())
+    results = []
+
+    for product, tsub in working.groupby("product", dropna=False):
+        msub = market[market["product"] == product].sort_values("timestamp").copy()
+        if msub.empty:
+            continue
+
+        if "mid_price" in msub.columns and msub["mid_price"].notna().any():
+            mark_series = pd.to_numeric(msub["mid_price"], errors="coerce")
+        else:
+            mark_series = (
+                pd.to_numeric(msub.get("bid_price_1"), errors="coerce")
+                + pd.to_numeric(msub.get("ask_price_1"), errors="coerce")
+            ) / 2.0
+        msub = msub.assign(mark_price=mark_series).dropna(subset=["timestamp", "mark_price"])
+
+        if msub.empty:
+            continue
+
+        ts_values = msub["timestamp"].to_numpy()
+
+        for _, row in tsub.iterrows():
+            trade_id = row.get("trade_id")
+            entry_ts = pd.to_numeric(row.get("entry_timestamp"), errors="coerce")
+            exit_ts = pd.to_numeric(row.get("exit_timestamp"), errors="coerce")
+            entry_price = pd.to_numeric(row.get("entry_price"), errors="coerce")
+            qty = abs(pd.to_numeric(row.get("quantity"), errors="coerce"))
+            direction = str(row.get("direction", "")).strip().lower()
+
+            if not (pd.notna(entry_ts) and pd.notna(exit_ts) and pd.notna(entry_price) and pd.notna(qty)):
+                continue
+            if qty <= 0:
+                continue
+
+            lo = min(entry_ts, exit_ts)
+            hi = max(entry_ts, exit_ts)
+            mask = (ts_values >= lo) & (ts_values <= hi)
+            path = msub.loc[mask, ["timestamp", "mark_price"]].copy()
+
+            if path.empty:
+                continue
+
+            if direction == "sell":
+                path_pnl = (entry_price - path["mark_price"]) * qty
+                price_move = entry_price - path["mark_price"]
+            else:
+                path_pnl = (path["mark_price"] - entry_price) * qty
+                price_move = path["mark_price"] - entry_price
+
+            pnl_numeric = pd.to_numeric(path_pnl, errors="coerce")
+            price_numeric = pd.to_numeric(price_move, errors="coerce")
+
+            early_window_mask = pd.to_numeric(path["timestamp"], errors="coerce") <= (entry_ts + 10000)
+            early_path = path.loc[early_window_mask].copy()
+            if early_path.empty:
+                early_path = path.iloc[[0]].copy()
+            early_pnl_numeric = pd.to_numeric(
+                ((entry_price - early_path["mark_price"]) * qty) if direction == "sell"
+                else ((early_path["mark_price"] - entry_price) * qty),
+                errors="coerce",
+            )
+            early_price_numeric = pd.to_numeric(
+                (entry_price - early_path["mark_price"]) if direction == "sell"
+                else (early_path["mark_price"] - entry_price),
+                errors="coerce",
+            )
+            early_mfe_pnl_10000 = early_pnl_numeric.max() if len(early_pnl_numeric) else np.nan
+            early_mfe_price_move_10000 = early_price_numeric.max() if len(early_price_numeric) else np.nan
+            mfe_idx = pnl_numeric.idxmax() if len(pnl_numeric) else None
+            mae_idx = pnl_numeric.idxmin() if len(pnl_numeric) else None
+            mfe_pnl = pnl_numeric.max()
+            mae_pnl = pnl_numeric.min()
+            mfe_price_move = price_numeric.max()
+            mae_price_move = price_numeric.min()
+            mfe_timestamp = pd.to_numeric(path.loc[mfe_idx, "timestamp"], errors="coerce") if mfe_idx is not None else np.nan
+            mae_timestamp = pd.to_numeric(path.loc[mae_idx, "timestamp"], errors="coerce") if mae_idx is not None else np.nan
+            time_to_mfe_ticks = mfe_timestamp - entry_ts if pd.notna(mfe_timestamp) else np.nan
+            time_to_mae_ticks = mae_timestamp - entry_ts if pd.notna(mae_timestamp) else np.nan
+            realized_pnl = pd.to_numeric(row.get("pnl"), errors="coerce")
+            capture_ratio = realized_pnl / mfe_pnl if pd.notna(realized_pnl) and pd.notna(mfe_pnl) and mfe_pnl > 0 else np.nan
+            efficiency_gap = mfe_pnl - realized_pnl if pd.notna(realized_pnl) and pd.notna(mfe_pnl) else np.nan
+
+            results.append(
+                {
+                    "trade_id": trade_id,
+                    "mfe_pnl": mfe_pnl,
+                    "mae_pnl": mae_pnl,
+                    "capture_ratio": capture_ratio,
+                    "efficiency_gap": efficiency_gap,
+                    "mfe_price_move": mfe_price_move,
+                    "mae_price_move": mae_price_move,
+                    "mfe_timestamp": mfe_timestamp,
+                    "mae_timestamp": mae_timestamp,
+                    "time_to_mfe_ticks": time_to_mfe_ticks,
+                    "time_to_mae_ticks": time_to_mae_ticks,
+                    "early_mfe_pnl_10000": early_mfe_pnl_10000,
+                    "early_mfe_price_move_10000": early_mfe_price_move_10000,
+                    "market_rows_in_trade": int(len(path)),
+                }
+            )
+
+    return pd.DataFrame(results)
+
+
+def _make_realized_vs_mfe_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["mfe_pnl", "pnl"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to see realized PnL vs MFE.")
+
+    for col in ["mfe_pnl", "pnl", "entry_spread", "hold_ticks"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work.dropna(subset=["mfe_pnl", "pnl"]).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    fig = go.Figure()
+    spread_vals = work["entry_spread"] if "entry_spread" in work.columns else pd.Series(np.nan, index=work.index)
+    hold_vals = work["hold_ticks"] if "hold_ticks" in work.columns else pd.Series(np.nan, index=work.index)
+    custom = np.column_stack([
+        work["product"].astype(str).to_numpy() if "product" in work.columns else np.array([""] * len(work)),
+        work["direction"].astype(str).to_numpy() if "direction" in work.columns else np.array([""] * len(work)),
+        np.nan_to_num(spread_vals.to_numpy(dtype=float), nan=np.nan),
+        np.nan_to_num(hold_vals.to_numpy(dtype=float), nan=np.nan),
+    ])
+
+    fig.add_trace(
+        go.Scatter(
+            x=work["mfe_pnl"],
+            y=work["pnl"],
+            mode="markers",
+            marker={"size": 8},
+            customdata=custom,
+            hovertemplate=(
+                "MFE=%{x:.4f}<br>"
+                "Realized PnL=%{y:.4f}<br>"
+                "Product=%{customdata[0]}<br>"
+                "Direction=%{customdata[1]}<br>"
+                "Entry Spread=%{customdata[2]:.4f}<br>"
+                "Hold=%{customdata[3]:.2f}<extra></extra>"
+            ),
+            name="Trades",
+        )
+    )
+
+    lo = float(min(work["mfe_pnl"].min(), work["pnl"].min()))
+    hi = float(max(work["mfe_pnl"].max(), work["pnl"].max()))
+    fig.add_trace(
+        go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="y=x", hoverinfo="skip")
+    )
+
+    fig.update_layout(
+        title="Realized PnL vs MFE",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="MFE PnL")
+    fig.update_yaxes(title_text="Realized PnL")
+    return fig
+
+
+def _make_realized_vs_mfe_by_spread_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["entry_spread", "pnl", "mfe_pnl"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to compare realized PnL and MFE by exact spread.")
+
+    for col in needed + ["win_flag"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work.dropna(subset=needed).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    rounded = work["entry_spread"].round()
+    if np.all(np.isclose(work["entry_spread"], rounded, atol=1e-9)):
+        work["entry_spread_exact"] = rounded.astype(int)
+    else:
+        work["entry_spread_exact"] = work["entry_spread"].round(4)
+
+    grouped = (
+        work.groupby("entry_spread_exact", as_index=False)
+        .agg(
+            avg_realized_pnl=("pnl", "mean"),
+            avg_mfe_pnl=("mfe_pnl", "mean"),
+            trade_count=("pnl", "size"),
+            avg_capture_ratio=("capture_ratio", "mean"),
+        )
+        .sort_values("entry_spread_exact")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=grouped["entry_spread_exact"],
+            y=grouped["avg_realized_pnl"],
+            name="Avg realized PnL",
+            customdata=np.column_stack([grouped["trade_count"], grouped["avg_mfe_pnl"], grouped["avg_capture_ratio"]]),
+            hovertemplate=(
+                "Entry Spread=%{x}<br>"
+                "Avg Realized PnL=%{y:.4f}<br>"
+                "Trades=%{customdata[0]:,.0f}<br>"
+                "Avg MFE=%{customdata[1]:.4f}<br>"
+                "Avg Capture Ratio=%{customdata[2]:.2%}<extra></extra>"
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["entry_spread_exact"],
+            y=grouped["avg_mfe_pnl"],
+            mode="lines+markers",
+            name="Avg MFE",
+            customdata=np.column_stack([grouped["trade_count"], grouped["avg_realized_pnl"], grouped["avg_capture_ratio"]]),
+            hovertemplate=(
+                "Entry Spread=%{x}<br>"
+                "Avg MFE=%{y:.4f}<br>"
+                "Trades=%{customdata[0]:,.0f}<br>"
+                "Avg Realized PnL=%{customdata[1]:.4f}<br>"
+                "Avg Capture Ratio=%{customdata[2]:.2%}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title="Average Realized PnL vs Average MFE by Exact Entry Spread",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 60},
+        barmode="group",
+    )
+    fig.update_xaxes(title_text="Exact Entry Spread")
+    fig.update_yaxes(title_text="PnL")
+    return fig
+
+
+def _make_capture_ratio_heatmap_figure(df: pd.DataFrame) -> go.Figure:
+    return _make_heatmap_figure(
+        df,
+        value_col="capture_ratio",
+        title="Average Capture Ratio by Hold Time × Entry Spread",
+        value_title="Capture Ratio",
+    )
+
+
+def _make_efficiency_gap_boxplot_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["entry_spread", "efficiency_gap"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to see efficiency gap by spread.")
+
+    for col in needed:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=needed).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    try:
+        work["spread_bucket"] = pd.qcut(work["entry_spread"], q=6, duplicates="drop")
+    except Exception:
+        work["spread_bucket"] = pd.cut(work["entry_spread"], bins=6)
+
+    fig = go.Figure()
+    for bucket, sub in work.groupby("spread_bucket", observed=False):
+        if len(sub) == 0:
+            continue
+        fig.add_trace(go.Box(y=sub["efficiency_gap"], name=str(bucket), boxmean=True))
+
+    fig.update_layout(
+        title="Efficiency Gap by Entry Spread Bucket",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 80},
+    )
+    fig.update_xaxes(title_text="Entry Spread Bucket")
+    fig.update_yaxes(title_text="Efficiency Gap (MFE - Realized)")
+    return fig
+
+
+def _make_mfe_vs_hold_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["hold_ticks", "mfe_pnl"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to see MFE vs hold time.")
+
+    for col in ["hold_ticks", "mfe_pnl", "entry_spread"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["hold_ticks", "mfe_pnl"]).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    fig = go.Figure()
+    if "entry_spread" in work.columns:
+        work["spread_regime"] = np.where(work["entry_spread"] >= 16, "spread ≥ 16", "spread < 16")
+    else:
+        work["spread_regime"] = "all trades"
+
+    for regime, sub in work.groupby("spread_regime"):
+        fig.add_trace(
+            go.Scatter(
+                x=sub["hold_ticks"],
+                y=sub["mfe_pnl"],
+                mode="markers",
+                name=str(regime),
+                customdata=np.column_stack([
+                    sub["product"].astype(str).to_numpy() if "product" in sub.columns else np.array([""] * len(sub)),
+                    sub["direction"].astype(str).to_numpy() if "direction" in sub.columns else np.array([""] * len(sub)),
+                ]),
+                hovertemplate=(
+                    "Hold=%{x:.2f}<br>"
+                    "MFE=%{y:.4f}<br>"
+                    "Product=%{customdata[0]}<br>"
+                    "Direction=%{customdata[1]}<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="MFE vs Hold Time",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Hold Ticks")
+    fig.update_yaxes(title_text="MFE PnL")
+    return fig
+
+
+def _make_mfe_vs_hold_core_regime_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["hold_ticks", "mfe_pnl", "entry_spread"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("MFE vs Hold Time for Spread Bucket 16 to 21")
+
+    for col in ["hold_ticks", "mfe_pnl", "entry_spread", "time_to_mfe_ticks", "pnl"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work[(work["entry_spread"] >= 16) & (work["entry_spread"] <= 21)].copy()
+    work = work.dropna(subset=["hold_ticks", "mfe_pnl"]).copy()
+    if work.empty:
+        return _empty_figure("No spread 16 to 21 trades with MFE data.")
+
+    custom = np.column_stack([
+        work["product"].astype(str).to_numpy() if "product" in work.columns else np.array([""] * len(work)),
+        work["direction"].astype(str).to_numpy() if "direction" in work.columns else np.array([""] * len(work)),
+        work["time_to_mfe_ticks"].to_numpy() if "time_to_mfe_ticks" in work.columns else np.array([np.nan] * len(work)),
+        work["pnl"].to_numpy() if "pnl" in work.columns else np.array([np.nan] * len(work)),
+    ])
+
+    fig = go.Figure(data=[go.Scatter(
+        x=work["hold_ticks"],
+        y=work["mfe_pnl"],
+        mode="markers",
+        marker={"size": 8},
+        customdata=custom,
+        hovertemplate=(
+            "Hold=%{x:.2f}<br>"
+            "MFE=%{y:.4f}<br>"
+            "Product=%{customdata[0]}<br>"
+            "Direction=%{customdata[1]}<br>"
+            "Time to MFE=%{customdata[2]:.2f}<br>"
+            "Realized PnL=%{customdata[3]:.4f}<extra></extra>"
+        ),
+        name="Spread 16-21 trades",
+    )])
+    fig.update_layout(
+        title="MFE vs Hold Time for Spread Bucket 16 to 21",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Hold Time")
+    fig.update_yaxes(title_text="MFE PnL")
+    return fig
+
+
+def _make_mfe_vs_time_to_mfe_core_regime_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["mfe_pnl", "time_to_mfe_ticks", "entry_spread"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("MFE vs Time to MFE for Spread Bucket 16 to 21")
+
+    for col in ["mfe_pnl", "time_to_mfe_ticks", "entry_spread", "hold_ticks", "pnl"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work[(work["entry_spread"] >= 16) & (work["entry_spread"] <= 21)].copy()
+    work = work.dropna(subset=["mfe_pnl", "time_to_mfe_ticks"]).copy()
+    if work.empty:
+        return _empty_figure("No spread 16 to 21 trades with time-to-MFE data.")
+
+    custom = np.column_stack([
+        work["product"].astype(str).to_numpy() if "product" in work.columns else np.array([""] * len(work)),
+        work["direction"].astype(str).to_numpy() if "direction" in work.columns else np.array([""] * len(work)),
+        work["hold_ticks"].to_numpy() if "hold_ticks" in work.columns else np.array([np.nan] * len(work)),
+        work["pnl"].to_numpy() if "pnl" in work.columns else np.array([np.nan] * len(work)),
+    ])
+
+    fig = go.Figure(data=[go.Scatter(
+        x=work["time_to_mfe_ticks"],
+        y=work["mfe_pnl"],
+        mode="markers",
+        marker={"size": 8},
+        customdata=custom,
+        hovertemplate=(
+            "Time to MFE=%{x:.2f}<br>"
+            "MFE=%{y:.4f}<br>"
+            "Product=%{customdata[0]}<br>"
+            "Direction=%{customdata[1]}<br>"
+            "Hold Time=%{customdata[2]:.2f}<br>"
+            "Realized PnL=%{customdata[3]:.4f}<extra></extra>"
+        ),
+        name="Spread 16-21 trades",
+    )])
+    fig.update_layout(
+        title="MFE vs Time to MFE for Spread Bucket 16 to 21",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Time to MFE")
+    fig.update_yaxes(title_text="MFE PnL")
+    return fig
+
+
+def _top_mfe_core_regime_table_columns() -> list[dict]:
+    return [
+        {"field": "trade_id", "headerName": "Trade ID", "flex": 1},
+        {"field": "product", "headerName": "Product", "flex": 1},
+        {"field": "direction", "headerName": "Direction", "flex": 1},
+        {"field": "entry_spread", "headerName": "Entry Spread", "flex": 1},
+        {"field": "mfe_pnl", "headerName": "MFE", "flex": 1},
+        {"field": "pnl", "headerName": "Realized PnL", "flex": 1},
+        {"field": "time_to_mfe_ticks", "headerName": "Time to MFE", "flex": 1},
+        {"field": "hold_ticks", "headerName": "Total Hold Time", "flex": 1},
+        {"field": "capture_ratio", "headerName": "Capture Ratio", "flex": 1},
+        {"field": "efficiency_gap", "headerName": "Efficiency Gap", "flex": 1},
+        {"field": "entry_timestamp", "headerName": "Entry Ts", "flex": 1},
+        {"field": "exit_timestamp", "headerName": "Exit Ts", "flex": 1},
+    ]
+
+
+def _prepare_top_mfe_core_regime_rows(df: pd.DataFrame, limit: int = 20) -> list[dict]:
+    work = df.copy()
+    needed = ["entry_spread", "mfe_pnl", "time_to_mfe_ticks", "hold_ticks"]
+    if not all(c in work.columns for c in needed):
+        return []
+
+    for col in ["entry_spread", "mfe_pnl", "pnl", "time_to_mfe_ticks", "hold_ticks", "capture_ratio", "efficiency_gap"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work[(work["entry_spread"] >= 16) & (work["entry_spread"] <= 21)].copy()
+    work = work.dropna(subset=["mfe_pnl", "time_to_mfe_ticks", "hold_ticks"]).copy()
+    if work.empty:
+        return []
+
+    cols = [c for c in [
+        "trade_id", "product", "direction", "entry_spread", "mfe_pnl", "pnl",
+        "time_to_mfe_ticks", "hold_ticks", "capture_ratio", "efficiency_gap",
+        "entry_timestamp", "exit_timestamp"
+    ] if c in work.columns]
+
+    out = work[cols].sort_values("mfe_pnl", ascending=False).head(limit).copy()
+    for col in ["entry_spread", "mfe_pnl", "pnl", "time_to_mfe_ticks", "hold_ticks", "capture_ratio", "efficiency_gap"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(4)
+    return out.to_dict("records")
+
+
+def _make_mae_vs_realized_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["mae_pnl", "pnl"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to see MAE vs realized PnL.")
+
+    for col in ["mae_pnl", "pnl", "entry_spread"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["mae_pnl", "pnl"]).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    fig = go.Figure()
+    custom = np.column_stack([
+        work["product"].astype(str).to_numpy() if "product" in work.columns else np.array([""] * len(work)),
+        work["direction"].astype(str).to_numpy() if "direction" in work.columns else np.array([""] * len(work)),
+        work["entry_spread"].to_numpy() if "entry_spread" in work.columns else np.array([np.nan] * len(work)),
+    ])
+    fig.add_trace(
+        go.Scatter(
+            x=work["mae_pnl"],
+            y=work["pnl"],
+            mode="markers",
+            marker={"size": 8},
+            customdata=custom,
+            hovertemplate=(
+                "MAE=%{x:.4f}<br>"
+                "Realized PnL=%{y:.4f}<br>"
+                "Product=%{customdata[0]}<br>"
+                "Direction=%{customdata[1]}<br>"
+                "Entry Spread=%{customdata[2]:.4f}<extra></extra>"
+            ),
+            name="Trades",
+        )
+    )
+    fig.update_layout(
+        title="MAE vs Realized PnL",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="MAE PnL")
+    fig.update_yaxes(title_text="Realized PnL")
+    return fig
+
+
+def _assign_heatmap_buckets(df: pd.DataFrame) -> pd.DataFrame:
+    work = df.copy()
+    required = ["hold_ticks", "entry_spread"]
+    if not all(c in work.columns for c in required):
+        return work
+
+    for col in required:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work.dropna(subset=required).copy()
+    if work.empty:
+        return work
+
+    try:
+        work["hold_bucket"] = pd.qcut(work["hold_ticks"], q=6, duplicates="drop")
+    except Exception:
+        work["hold_bucket"] = pd.cut(work["hold_ticks"], bins=6)
+
+    try:
+        work["spread_bucket"] = pd.qcut(work["entry_spread"], q=6, duplicates="drop")
+    except Exception:
+        work["spread_bucket"] = pd.cut(work["entry_spread"], bins=6)
+
+    return work
+
+
+def _spread_bucket_label(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    bins = [-np.inf, 10, 16, 21, np.inf]
+    labels = ["≤10", "11-15", "16-21", "22+"]
+    return pd.cut(s, bins=bins, labels=labels, include_lowest=True, right=True)
+
+
+def _make_capture_count_heatmap_figure(df: pd.DataFrame) -> go.Figure:
+    work = _assign_heatmap_buckets(df)
+    if work.empty or "capture_ratio" not in work.columns:
+        return _empty_figure("Trade Count for Capture-Ratio Heatmap Buckets")
+
+    grouped = (
+        work.groupby(["spread_bucket", "hold_bucket"], observed=False)
+        .agg(trade_count=("capture_ratio", "size"))
+        .reset_index()
+    )
+    if grouped.empty:
+        return _empty_figure("Trade Count for Capture-Ratio Heatmap Buckets")
+
+    pivot = grouped.pivot(index="spread_bucket", columns="hold_bucket", values="trade_count")
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=pivot.to_numpy(),
+            x=[str(c) for c in pivot.columns],
+            y=[str(i) for i in pivot.index],
+            colorbar={"title": "Trade Count"},
+            hovertemplate=(
+                "Hold Bucket=%{x}<br>"
+                "Entry Spread Bucket=%{y}<br>"
+                "Trade Count=%{z:,.0f}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title="Trade Count for Capture-Ratio Heatmap Buckets",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Hold Time Bucket")
+    fig.update_yaxes(title_text="Entry Spread Bucket")
+    return fig
+
+
+def _top_spread_hold_table_columns() -> list[dict]:
+    return [
+        {"field": "top_spread_bucket", "headerName": "Top Spread Bucket", "flex": 2},
+        {"field": "hold_bucket", "headerName": "Hold Time Bucket", "flex": 2},
+        {"field": "trade_count", "headerName": "Trade Count", "flex": 1},
+        {"field": "avg_realized_pnl", "headerName": "Avg Realized PnL", "flex": 1},
+        {"field": "avg_mfe", "headerName": "Avg MFE", "flex": 1},
+        {"field": "avg_mae", "headerName": "Avg MAE", "flex": 1},
+        {"field": "avg_capture_ratio", "headerName": "Avg Capture Ratio", "flex": 1},
+        {"field": "median_realized_pnl", "headerName": "Median Realized PnL", "flex": 1},
+    ]
+
+
+def _prepare_top_spread_hold_rows(df: pd.DataFrame) -> list[dict]:
+    work = _assign_heatmap_buckets(df)
+    needed = ["hold_bucket", "spread_bucket", "pnl", "mfe_pnl", "mae_pnl", "capture_ratio"]
+    if work.empty or not all(c in work.columns for c in needed):
+        return []
+
+    top_bucket = None
+    spread_order = work["spread_bucket"].dropna().astype(str).unique().tolist()
+    if spread_order:
+        top_bucket = sorted(spread_order)[-1]
+    if top_bucket is None:
+        return []
+
+    filtered = work[work["spread_bucket"].astype(str) == top_bucket].copy()
+    if filtered.empty:
+        return []
+
+    grouped = (
+        filtered.groupby("hold_bucket", observed=False)
+        .agg(
+            trade_count=("pnl", "size"),
+            avg_realized_pnl=("pnl", "mean"),
+            avg_mfe=("mfe_pnl", "mean"),
+            avg_mae=("mae_pnl", "mean"),
+            avg_capture_ratio=("capture_ratio", "mean"),
+            median_realized_pnl=("pnl", "median"),
+        )
+        .reset_index()
+    )
+    if grouped.empty:
+        return []
+
+    grouped["top_spread_bucket"] = top_bucket
+    grouped["hold_bucket"] = grouped["hold_bucket"].astype(str)
+    for col in ["avg_realized_pnl", "avg_mfe", "avg_mae", "avg_capture_ratio", "median_realized_pnl"]:
+        grouped[col] = pd.to_numeric(grouped[col], errors="coerce").round(4)
+    grouped = grouped.sort_values("hold_bucket")
+    return grouped[
+        [
+            "top_spread_bucket",
+            "hold_bucket",
+            "trade_count",
+            "avg_realized_pnl",
+            "avg_mfe",
+            "avg_mae",
+            "avg_capture_ratio",
+            "median_realized_pnl",
+        ]
+    ].to_dict("records")
+
+
+def _efficiency_gap_examples_table_columns() -> list[dict]:
+    return [
+        {"field": "trade_id", "headerName": "Trade ID", "flex": 1},
+        {"field": "product", "headerName": "Product", "flex": 1},
+        {"field": "direction", "headerName": "Direction", "flex": 1},
+        {"field": "entry_spread", "headerName": "Entry Spread", "flex": 1},
+        {"field": "hold_ticks", "headerName": "Hold Ticks", "flex": 1},
+        {"field": "pnl", "headerName": "Realized PnL", "flex": 1},
+        {"field": "mfe_pnl", "headerName": "MFE", "flex": 1},
+        {"field": "mae_pnl", "headerName": "MAE", "flex": 1},
+        {"field": "capture_ratio", "headerName": "Capture Ratio", "flex": 1},
+        {"field": "efficiency_gap", "headerName": "Efficiency Gap", "flex": 1},
+        {"field": "entry_timestamp", "headerName": "Entry Ts", "flex": 1},
+        {"field": "exit_timestamp", "headerName": "Exit Ts", "flex": 1},
+    ]
+
+
+def _prepare_efficiency_gap_example_rows(df: pd.DataFrame, limit: int = 20) -> list[dict]:
+    work = df.copy()
+    needed = ["entry_spread", "efficiency_gap", "mfe_pnl", "pnl"]
+    if not all(c in work.columns for c in needed):
+        return []
+
+    for col in ["entry_spread", "efficiency_gap", "mfe_pnl", "mae_pnl", "pnl", "capture_ratio", "hold_ticks"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    work = work[(work["entry_spread"] >= 16) & (work["entry_spread"] <= 21)].copy()
+    work = work.dropna(subset=["efficiency_gap", "mfe_pnl", "pnl"]).copy()
+    if work.empty:
+        return []
+
+    cols = [
+        c for c in [
+            "trade_id", "product", "direction", "entry_spread", "hold_ticks", "pnl", "mfe_pnl",
+            "mae_pnl", "capture_ratio", "efficiency_gap", "entry_timestamp", "exit_timestamp"
+        ] if c in work.columns
+    ]
+    out = work[cols].sort_values("efficiency_gap", ascending=False).head(limit).copy()
+    for col in ["entry_spread", "hold_ticks", "pnl", "mfe_pnl", "mae_pnl", "capture_ratio", "efficiency_gap"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(4)
+    return out.to_dict("records")
+
+
+def _make_realized_vs_mfe_spread_bucket_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["pnl", "mfe_pnl", "entry_spread"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Upload market-state data to compare realized PnL and MFE by spread bucket.")
+
+    for col in needed + ["hold_ticks"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=needed).copy()
+    if work.empty:
+        return _empty_figure("Not enough excursion rows yet.")
+
+    work["spread_bucket_label"] = _spread_bucket_label(work["entry_spread"]).astype(str)
+    order = ["≤10", "11-15", "16-21", "22+"]
+
+    fig = go.Figure()
+    for label in order:
+        sub = work[work["spread_bucket_label"] == label].copy()
+        if sub.empty:
+            continue
+        custom = np.column_stack([
+            sub["product"].astype(str).to_numpy() if "product" in sub.columns else np.array([""] * len(sub)),
+            sub["direction"].astype(str).to_numpy() if "direction" in sub.columns else np.array([""] * len(sub)),
+            sub["entry_spread"].round(4).to_numpy(),
+        ])
+        fig.add_trace(
+            go.Scatter(
+                x=sub["mfe_pnl"],
+                y=sub["pnl"],
+                mode="markers",
+                name=label,
+                customdata=custom,
+                hovertemplate=(
+                    "MFE=%{x:.4f}<br>"
+                    "Realized PnL=%{y:.4f}<br>"
+                    "Product=%{customdata[0]}<br>"
+                    "Direction=%{customdata[1]}<br>"
+                    "Entry Spread=%{customdata[2]:.4f}<extra></extra>"
+                ),
+            )
+        )
+
+    if not work.empty:
+        lo = min(work["mfe_pnl"].min(), work["pnl"].min())
+        hi = max(work["mfe_pnl"].max(), work["pnl"].max())
+        fig.add_trace(
+            go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="y = x", hoverinfo="skip")
+        )
+
+    fig.update_layout(
+        title="Realized PnL vs MFE by Spread Bucket",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="MFE PnL")
+    fig.update_yaxes(title_text="Realized PnL")
+    return fig
+
+
+
+def _early_mfe_bucket_table_columns() -> list[dict]:
+    return [
+        {"field": "early_mfe_bucket", "headerName": "Early MFE Bucket", "flex": 2},
+        {"field": "trade_count", "headerName": "Count", "flex": 1},
+        {"field": "avg_final_mfe", "headerName": "Avg Final MFE", "flex": 1},
+        {"field": "avg_pnl", "headerName": "Avg PnL", "flex": 1},
+        {"field": "runner_pct", "headerName": "Runner %", "flex": 1},
+    ]
+
+
+def _prepare_early_mfe_bucket_rows(df: pd.DataFrame) -> list[dict]:
+    work = df.copy()
+    needed = ["early_mfe_pnl_10000", "mfe_pnl", "pnl", "runner_flag"]
+    if not all(c in work.columns for c in needed):
+        return []
+
+    for col in ["early_mfe_pnl_10000", "mfe_pnl", "pnl"]:
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+    work["runner_flag"] = work["runner_flag"].fillna(False).astype(bool)
+    work = work.dropna(subset=["early_mfe_pnl_10000", "mfe_pnl", "pnl"]).copy()
+    if work.empty:
+        return []
+
+    bins = [-np.inf, 0, 10, 20, 30, np.inf]
+    labels = ["< 0", "0–10", "10–20", "20–30", "30+"]
+    work["early_mfe_bucket"] = pd.cut(
+        work["early_mfe_pnl_10000"], bins=bins, labels=labels, include_lowest=True, right=False
+    )
+
+    grouped = (
+        work.groupby("early_mfe_bucket", observed=False)
+        .agg(
+            trade_count=("pnl", "size"),
+            avg_final_mfe=("mfe_pnl", "mean"),
+            avg_pnl=("pnl", "mean"),
+            runner_pct=("runner_flag", "mean"),
+        )
+        .reset_index()
+    )
+    if grouped.empty:
+        return []
+
+    grouped["early_mfe_bucket"] = grouped["early_mfe_bucket"].astype(str)
+    grouped["runner_pct"] = 100.0 * pd.to_numeric(grouped["runner_pct"], errors="coerce")
+    for col in ["avg_final_mfe", "avg_pnl", "runner_pct"]:
+        grouped[col] = pd.to_numeric(grouped[col], errors="coerce").round(4)
+
+    order_map = {label: i for i, label in enumerate(labels)}
+    grouped["sort_key"] = grouped["early_mfe_bucket"].map(order_map)
+    grouped = grouped.sort_values("sort_key").drop(columns=["sort_key"])
+    return grouped.to_dict("records")
+
+
+def _make_early_mfe_vs_capture_runner_figure(df: pd.DataFrame) -> go.Figure:
+    work = df.copy()
+    needed = ["runner_flag", "early_mfe_pnl_10000", "capture_ratio"]
+    if not all(c in work.columns for c in needed):
+        return _empty_figure("Early MFE vs Capture Ratio for Runners")
+
+    for col in ["early_mfe_pnl_10000", "capture_ratio", "time_to_mfe_ticks", "mfe_pnl", "pnl"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work["runner_flag"] = work["runner_flag"].fillna(False).astype(bool)
+    work = work[work["runner_flag"]].dropna(subset=["early_mfe_pnl_10000", "capture_ratio"]).copy()
+    if work.empty:
+        return _empty_figure("No runner trades with early MFE / capture data.")
+
+    custom = np.column_stack([
+        work["product"].astype(str).to_numpy() if "product" in work.columns else np.array([""] * len(work)),
+        work["direction"].astype(str).to_numpy() if "direction" in work.columns else np.array([""] * len(work)),
+        work["time_to_mfe_ticks"].to_numpy() if "time_to_mfe_ticks" in work.columns else np.array([np.nan] * len(work)),
+        work["mfe_pnl"].to_numpy() if "mfe_pnl" in work.columns else np.array([np.nan] * len(work)),
+        work["pnl"].to_numpy() if "pnl" in work.columns else np.array([np.nan] * len(work)),
+    ])
+
+    fig = go.Figure(
+        data=[go.Scatter(
+            x=work["early_mfe_pnl_10000"],
+            y=work["capture_ratio"],
+            mode="markers",
+            marker={"size": 8},
+            customdata=custom,
+            hovertemplate=(
+                "Early MFE (10k)=%{x:.4f}<br>"
+                "Capture Ratio=%{y:.4f}<br>"
+                "Product=%{customdata[0]}<br>"
+                "Direction=%{customdata[1]}<br>"
+                "Time to MFE=%{customdata[2]:.2f}<br>"
+                "Final MFE=%{customdata[3]:.4f}<br>"
+                "Realized PnL=%{customdata[4]:.4f}<extra></extra>"
+            ),
+            name="Runners only",
+        )]
+    )
+    fig.update_layout(
+        title="Early MFE vs Capture Ratio for Runners Only",
+        template="plotly_white",
+        height=430,
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Early MFE in First 10k Ticks")
+    fig.update_yaxes(title_text="Capture Ratio")
+    return fig
+
+
 def _research_table_columns(df: pd.DataFrame) -> list[dict]:
     preferred = [
         "trade_id",
@@ -1089,11 +2848,28 @@ def _research_table_columns(df: pd.DataFrame) -> list[dict]:
         "exit_spread",
         "entry_vs_mid",
         "exit_vs_mid",
+        "entry_liquidity_bucket",
+        "exit_liquidity_bucket",
+        "round_trip_liquidity_bucket",
+        "inventory_reference",
+        "inventory_abs",
+        "inventory_bucket",
         "imbalance_top3",
         "imbalance_z",
         "spread_z",
         "mid_z",
         "market_timestamp_at_entry",
+        "mfe_pnl",
+        "mae_pnl",
+        "capture_ratio",
+        "efficiency_gap",
+        "mfe_price_move",
+        "mae_price_move",
+        "mfe_timestamp",
+        "mae_timestamp",
+        "time_to_mfe_ticks",
+        "time_to_mae_ticks",
+        "market_rows_in_trade",
         "pnl",
         "return_pct",
         "outcome",
@@ -1119,11 +2895,24 @@ def _prepare_grid_rows(df: pd.DataFrame) -> list[dict]:
         "exit_spread",
         "entry_vs_mid",
         "exit_vs_mid",
+        "entry_liquidity_bucket",
+        "exit_liquidity_bucket",
+        "round_trip_liquidity_bucket",
+        "inventory_reference",
+        "inventory_abs",
+        "inventory_bucket",
         "imbalance_top3",
         "imbalance_z",
         "spread_z",
         "mid_z",
         "market_timestamp_at_entry",
+        "mfe_pnl",
+        "mae_pnl",
+        "capture_ratio",
+        "efficiency_gap",
+        "mfe_price_move",
+        "mae_price_move",
+        "market_rows_in_trade",
         "pnl",
         "return_pct",
         "outcome",

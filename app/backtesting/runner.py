@@ -188,13 +188,18 @@ def resolve_targets(request: BacktestRequest, file_reader: Any, has_day_data_fun
         day_group = match.group(2)
 
         if day_group is None:
-            expanded = [
-                BacktestTarget(round_num=round_num, day_num=day)
-                for day in BACKTEST_DAY_SCAN_RANGE
+            available_days = [
+                day for day in range(-10, 10)
                 if has_day_data_func(file_reader, round_num, day)
             ]
-            if not expanded:
+
+            if not available_days:
                 raise ValueError(f"No data is available for round {round_num} in the selected data source.")
+
+            expanded = [
+                BacktestTarget(round_num=round_num, day_num=day)
+                for day in sorted(available_days)
+            ]
             targets.extend(expanded)
         else:
             day_num = int(day_group)
@@ -323,7 +328,6 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
 
     df = df.sort_values(["run_index", "product", "timestamp"]).reset_index(drop=True)
 
-    # Fill broken quote gaps within each run/product so charts do not spike to zero/NaN.
     fill_cols = [c for c in ["bid_price_1", "ask_price_1", "mid_price", "spread", "profit_loss"] if c in df.columns]
     if fill_cols:
         df[fill_cols] = (
@@ -331,7 +335,6 @@ def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
             .ffill()
         )
 
-    # As a final guard, never allow nonpositive mids to hit the graph.
     if "mid_price" in df.columns:
         df.loc[df["mid_price"] <= 0, "mid_price"] = np.nan
 
