@@ -236,6 +236,106 @@ def build_custom_data_root(upload_dir: Path, filenames: list[str]) -> Path:
     return data_root
 
 
+class _PatchedTextFile:
+    def __init__(self, original_file, patched_text: str):
+        self._original_file = original_file
+        self._patched_text = patched_text
+
+    def read_text(self, encoding: str = "utf-8", *args, **kwargs):
+        return self._patched_text
+
+    def __getattr__(self, name):
+        return getattr(self._original_file, name)
+
+
+def _scale_prices_csv_text(raw_text: str, factor: float) -> str:
+    if factor == 1.0 or not raw_text:
+        return raw_text
+
+    lines = raw_text.splitlines()
+    if len(lines) <= 1:
+        return raw_text
+
+    header = lines[0]
+    out_lines = [header]
+
+    volume_indices = [4, 6, 8, 10, 12, 14]
+
+    for line in lines[1:]:
+        if not line:
+            out_lines.append(line)
+            continue
+
+        cols = line.split(";")
+        for idx in volume_indices:
+            if idx >= len(cols):
+                continue
+            value = cols[idx].strip()
+            if value == "":
+                continue
+            try:
+                original = int(float(value))
+            except Exception:
+                continue
+
+            if original > 0:
+                scaled = max(original, int(round(original * factor)))
+                cols[idx] = str(scaled)
+
+        out_lines.append(";".join(cols))
+
+    return "\n".join(out_lines)
+
+
+def _patch_file_reader_for_extra_volume(file_reader: Any, factor: float) -> Any:
+    if factor == 1.0 or not hasattr(file_reader, "file"):
+        return file_reader
+
+    original_file_method = file_reader.file
+
+    class _PatchedFileContext:
+        def __init__(self, path_parts):
+            self._path_parts = path_parts
+            self._inner_cm = None
+            self._entered_obj = None
+
+        def __enter__(self):
+            self._inner_cm = original_file_method(self._path_parts)
+            self._entered_obj = self._inner_cm.__enter__()
+
+            if self._entered_obj is None:
+                return None
+
+            filename = ""
+            try:
+                filename = str(self._path_parts[-1])
+            except Exception:
+                filename = ""
+
+            if not filename.startswith("prices_round_") or not filename.endswith(".csv"):
+                return self._entered_obj
+
+            try:
+                raw_text = self._entered_obj.read_text(encoding="utf-8")
+                patched_text = _scale_prices_csv_text(raw_text, factor)
+                return _PatchedTextFile(self._entered_obj, patched_text)
+            except Exception:
+                return self._entered_obj
+
+        def __exit__(self, exc_type, exc, tb):
+            if self._inner_cm is None:
+                return False
+            return self._inner_cm.__exit__(exc_type, exc, tb)
+
+    def _wrapped_file(path_parts):
+        return _PatchedFileContext(path_parts)
+
+    file_reader.file = _wrapped_file
+    setattr(file_reader, "_extra_volume_factor", factor)
+    setattr(file_reader, "_extra_volume_patched", True)
+    return file_reader
+
+
 
 def _activity_logs_to_df(results: list[Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
@@ -779,6 +879,10 @@ def run_backtests(
     if extra_volume_pct < 0:
         raise ValueError("Extra volume percentage cannot be negative.")
 
+    extra_volume_factor = 1.0 + extra_volume_pct
+    if extra_volume_factor != 1.0:
+        file_reader = _patch_file_reader_for_extra_volume(file_reader, extra_volume_factor)
+
     previous_env_value = os.environ.get("PROSPERITY_EXTRA_VOLUME_PCT")
     os.environ["PROSPERITY_EXTRA_VOLUME_PCT"] = str(extra_volume_pct)
 
@@ -788,6 +892,15 @@ def run_backtests(
 
         for target in targets:
             trader = _instantiate_trader(strategy_path)
+            print(
+                "RUN_BACKTEST",
+                {
+                    "target": target.label,
+                    "extra_volume_pct": extra_volume_pct,
+                    "extra_volume_factor": extra_volume_factor,
+                    "reader_patched": bool(getattr(file_reader, "_extra_volume_patched", False)),
+                },
+            )
             result = api["run_backtest"](
                 trader=trader,
                 file_reader=file_reader,

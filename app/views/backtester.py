@@ -17,6 +17,7 @@ from app.backtesting.runner import build_custom_data_root, parse_limit_overrides
 from app.config import DEFAULT_BACKTEST_PRESET, DEFAULT_LIMIT_OVERRIDES_TEXT, DEFAULT_MATCH_TRADES
 from app.models.schemas import BacktestRequest
 
+
 def _build_custom_data_root_from_session_store(session_store: dict, tmpdir_path: Path) -> Path | None:
     if not session_store:
         return None
@@ -244,6 +245,7 @@ def build_backtester_layout():
                         "Export Realized Trades CSV",
                         id="export-realized-trades-btn",
                         n_clicks=0,
+                        disabled=True,
                         style={
                             "height": "42px",
                             "padding": "0 18px",
@@ -273,7 +275,6 @@ def build_backtester_layout():
             html.Div(id="backtest-position-by-product-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-per-run-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-per-product-container", style={"marginBottom": "20px"}),
-
             html.Div(
                 [
                     html.H4("Winning trades"),
@@ -299,7 +300,6 @@ def build_backtester_layout():
                 ],
                 style={"marginBottom": "24px"},
             ),
-
             html.Div(
                 [
                     html.H4("Losing trades"),
@@ -325,7 +325,6 @@ def build_backtester_layout():
                 ],
                 style={"marginBottom": "24px"},
             ),
-
             html.Div(id="backtest-trades-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-activity-container", style={"marginBottom": "20px"}),
             html.Div(id="backtest-sandbox-container", style={"marginBottom": "20px"}),
@@ -477,7 +476,7 @@ def register_backtester_callbacks(app):
                         else "Using local backtester round data."
                     ),
                     html.Span(
-                        f" Extra market access: {int(round(100 * float(payload.summary.get("extra_volume_pct", 0.0))))}%.",
+                        f" Extra market access: {int(round(100 * float(payload.summary.get('extra_volume_pct', 0.0))))}%.",
                     ),
                 ],
                 style={
@@ -625,28 +624,52 @@ def register_backtester_callbacks(app):
         return _make_trade_focus_figure(activity_df, selected_rows[0], title_prefix="Losing trade")
 
     @app.callback(
+        Output("export-realized-trades-btn", "disabled"),
+        Input("backtest-payload-store", "data"),
+    )
+    def toggle_export_button(payload_data):
+        if not payload_data:
+            return True
+
+        realized_rows = payload_data.get("realized_trade_rows", [])
+        return len(realized_rows) == 0
+
+    @app.callback(
         Output("download-realized-trades", "data"),
         Input("export-realized-trades-btn", "n_clicks"),
         State("backtest-payload-store", "data"),
         prevent_initial_call=True,
     )
     def export_realized_trades_csv(n_clicks, payload_data):
-        if not n_clicks or not payload_data:
+        print("EXPORT CLICKED:", n_clicks)
+
+        if not n_clicks:
             raise PreventUpdate
+
+        if not payload_data:
+            print("No payload data available for export.")
+            empty_df = pd.DataFrame({"message": ["No backtest run yet"]})
+            return dcc.send_data_frame(
+                empty_df.to_csv,
+                "realized_trades.csv",
+                index=False,
+            )
 
         realized_rows = payload_data.get("realized_trade_rows", [])
-        if not realized_rows:
-            raise PreventUpdate
+        print("REALIZED TRADE ROW COUNT:", len(realized_rows))
 
         realized_df = pd.DataFrame(realized_rows)
+
         if realized_df.empty:
-            raise PreventUpdate
+            print("No realized trades found. Exporting placeholder CSV.")
+            realized_df = pd.DataFrame({"message": ["No realized trades"]})
 
         return dcc.send_data_frame(
             realized_df.to_csv,
             "realized_trades.csv",
             index=False,
         )
+
 
 def _build_summary_cards(summary: dict):
     cards = [
@@ -659,7 +682,7 @@ def _build_summary_cards(summary: dict):
         ("Average win / trade", _fmt_number(summary.get("average_win_per_trade"), decimals=2)),
         ("Win rate", _fmt_pct(summary.get("win_rate"))),
         ("Products traded", ", ".join(summary.get("products_traded", [])) or "None"),
-        ("Extra market access", f"{int(round(100 * float(summary.get("extra_volume_pct", 0.0))))}%"),
+        ("Extra market access", f"{int(round(100 * float(summary.get('extra_volume_pct', 0.0))))}%"),
     ]
     return html.Div(
         [
@@ -897,7 +920,6 @@ def _make_product_pnl_figure(activity_df: pd.DataFrame, product: str) -> go.Figu
     return fig
 
 
-
 def _make_execution_figure(activity_df: pd.DataFrame, trades_df: pd.DataFrame) -> go.Figure:
     if activity_df.empty:
         return _empty_figure("No prices available from backtest activity log.")
@@ -1001,6 +1023,7 @@ def _make_product_execution_figure(activity_df: pd.DataFrame, trades_df: pd.Data
     fig.update_yaxes(title_text="Price")
     return fig
 
+
 def _make_position_figure(trades_df: pd.DataFrame) -> go.Figure:
     if trades_df.empty:
         return _empty_figure("No submission trades were filled.")
@@ -1062,7 +1085,6 @@ def _make_product_position_figure(trades_df: pd.DataFrame, product: str) -> go.F
     fig.update_xaxes(title_text="Fill index")
     fig.update_yaxes(title_text="Position")
     return fig
-
 
 
 def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_prefix: str) -> go.Figure:
@@ -1203,6 +1225,7 @@ def _make_trade_focus_figure(activity_df: pd.DataFrame, trade_row: dict, title_p
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Price")
     return fig
+
 
 def _empty_figure(title: str) -> go.Figure:
     fig = go.Figure()
