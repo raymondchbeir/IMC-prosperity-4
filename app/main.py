@@ -4,24 +4,29 @@ import app.backtesting.runner as legacy_runner
 from app.backtesting.rust_runner import run_rust_backtests
 from app.views import backtester as backtester_view
 from app.views import market_overview as market_overview_view
+from app.views import upload as upload_view
 from app.views.overview_bot_heatmaps import (
     append_overview_bot_heatmap_layout,
     register_overview_bot_heatmap_callbacks,
 )
 from app.views.portal_logs import build_portal_logs_layout, register_portal_logs_callbacks
-from app.views.upload import get_upload_layout, register_upload_callbacks
 
 # Keep the existing dashboard/backtester UI intact, but route runs through the Rust CLI adapter.
 legacy_runner.run_backtests = run_rust_backtests
 backtester_view.run_backtests = run_rust_backtests
 
 # Add uploaded-CSV bot trade heatmaps to the Overview layout everywhere it is rebuilt.
+# upload.py imports build_market_overview_graphs_layout directly, so patch both the source
+# module and upload.py's already-bound module global.
 _original_market_overview_layout = market_overview_view.build_market_overview_graphs_layout
+
 
 def _build_market_overview_graphs_layout_with_bot_heatmaps():
     return append_overview_bot_heatmap_layout(_original_market_overview_layout())
 
+
 market_overview_view.build_market_overview_graphs_layout = _build_market_overview_graphs_layout_with_bot_heatmaps
+upload_view.build_market_overview_graphs_layout = _build_market_overview_graphs_layout_with_bot_heatmaps
 
 
 app = Dash(__name__, suppress_callback_exceptions=True)
@@ -56,7 +61,7 @@ def _append_portal_logs_tab(component):
     return component
 
 
-base_upload_layout = _append_portal_logs_tab(get_upload_layout())
+base_upload_layout = _append_portal_logs_tab(upload_view.get_upload_layout())
 
 app.layout = html.Div(
     [
@@ -74,7 +79,7 @@ app.layout = html.Div(
     },
 )
 
-register_upload_callbacks(app)
+upload_view.register_upload_callbacks(app)
 register_portal_logs_callbacks(app)
 register_overview_bot_heatmap_callbacks(app)
 
