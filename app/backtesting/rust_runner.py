@@ -49,7 +49,7 @@ def run_rust_backtests(
             "--output-root", str(output_root),
             "--persist",
             "--artifact-mode", "full",
-            "--trade-match-mode", request.match_trades or "all",
+            "--products", "full",
         ]
 
         if request.selected_day is not None and request.preset in {"selected_dashboard_round_day", "manual"}:
