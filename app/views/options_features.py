@@ -40,6 +40,7 @@ import base64
 import io
 import math
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
@@ -64,6 +65,8 @@ except Exception:  # pragma: no cover
 UNDERLYING_ALIASES = (
     "VOLCANIC_ROCK",
     "VOLCANIC ROCK",
+    "VELVETFRUIT_EXTRACT",
+    "VELVETFRUIT",
     "VR",
     "UNDERLYING",
 )
@@ -72,6 +75,8 @@ OPTION_NAME_HINTS = (
     "VOUCHER",
     "CALL",
     "OPTION",
+    "VEV_",
+    "VEV",
 )
 
 DEFAULT_DAYS_TO_EXPIRY = 7.0
@@ -143,6 +148,8 @@ def _normalize_columns(df: Optional[pd.DataFrame]) -> pd.DataFrame:
                 break
     out = out.rename(columns=rename)
 
+    if "day" in out.columns:
+        out["day"] = pd.to_numeric(out["day"], errors="coerce")
     if "timestamp" in out.columns:
         out["timestamp"] = pd.to_numeric(out["timestamp"], errors="coerce")
     if "product" in out.columns:
@@ -215,11 +222,13 @@ def load_options_csv_files(price_files: Iterable[Any], trade_files: Optional[Ite
     price_frames: list[pd.DataFrame] = []
     for f in price_files or []:
         df = _read_semicolon_safe_csv(f, str(f))
+        df = _add_day_from_filename_if_missing(df, str(f))
         if not df.empty:
             price_frames.append(df)
     trade_frames: list[pd.DataFrame] = []
     for f in trade_files or []:
         df = _read_semicolon_safe_csv(f, str(f))
+        df = _add_day_from_filename_if_missing(df, str(f))
         if not df.empty:
             trade_frames.append(df)
     prices = pd.concat(price_frames, ignore_index=True) if price_frames else pd.DataFrame()
@@ -246,12 +255,14 @@ def parse_uploaded_options_csvs(
     price_frames = []
     for contents, name in zip(price_contents or [], price_filenames or []):
         df = _parse_upload_contents(contents, name)
+        df = _add_day_from_filename_if_missing(df, name)
         if not df.empty:
             price_frames.append(df)
 
     trade_frames = []
     for contents, name in zip(trade_contents or [], trade_filenames or []):
         df = _parse_upload_contents(contents, name)
+        df = _add_day_from_filename_if_missing(df, name)
         if not df.empty:
             trade_frames.append(df)
 
@@ -268,6 +279,52 @@ def _uploaded_file_list(names: Any, kind: str) -> Any:
     if isinstance(names, str):
         names = [names]
     return html.Ul([html.Li(str(n)) for n in names], style={"margin": "4px 0 0 18px", "fontSize": "12px"})
+
+
+
+def _extract_day_from_filename(filename: str | None) -> Optional[int]:
+    """Extract day number from filenames like prices_round_3_day_0.csv."""
+    if not filename:
+        return None
+    m = re.search(r"day[_\-\s]?(-?\d+)", str(filename), flags=re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def _add_day_from_filename_if_missing(df: pd.DataFrame, filename: str | None) -> pd.DataFrame:
+    if df is None or df.empty or "day" in df.columns:
+        return df
+    day = _extract_day_from_filename(filename)
+    if day is not None:
+        out = df.copy()
+        out["day"] = day
+        return out
+    return df
+
+
+def _time_key_cols(df: pd.DataFrame) -> list[str]:
+    """Use day + timestamp when available so Round 3 day 0/1/2 rows do not collide."""
+    if df is None or df.empty:
+        return []
+    keys = []
+    if "day" in df.columns:
+        keys.append("day")
+    if "timestamp" in df.columns:
+        keys.append("timestamp")
+    return keys
+
+
+def _latest_slice(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the latest day/timestamp slice without mixing identical timestamps across days."""
+    if df is None or df.empty:
+        return df
+    out = df
+    if "day" in out.columns and out["day"].notna().any():
+        latest_day = out["day"].max()
+        out = out[out["day"] == latest_day]
+    if "timestamp" in out.columns and out["timestamp"].notna().any():
+        latest_ts = out["timestamp"].max()
+        out = out[out["timestamp"] == latest_ts]
+    return out
 
 
 def _infer_strike(product: str) -> Optional[float]:
@@ -304,6 +361,76 @@ def _norm_cdf(x: np.ndarray | float) -> np.ndarray | float:
 def _norm_pdf(x: np.ndarray | float) -> np.ndarray | float:
     x = np.asarray(x)
     return np.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+# =============================================================================
+# Volatility Risk Premium helpers
+# =============================================================================
+
+def _rolling_zscore_by_product(df: pd.DataFrame, value_col: str, window: int) -> pd.Series:
+    """Rolling z-score helper used by VRP and option diagnostics."""
+    if df.empty or value_col not in df.columns or "product" not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    min_periods = max(5, window // 5)
+    grouped = df.groupby("product")[value_col]
+    mean = grouped.transform(lambda s: s.rolling(window, min_periods=min_periods).mean())
+    std = grouped.transform(lambda s: s.rolling(window, min_periods=min_periods).std())
+    return pd.Series(_safe_div(df[value_col] - mean, std), index=df.index)
+
+
+def _add_vrp_features(options: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.DataFrame:
+    """
+    Adds Volatility Risk Premium features.
+
+    VRP = implied volatility minus realized volatility.
+
+    Positive VRP means options are rich versus recent realized volatility.
+    Negative VRP means options are cheap versus recent realized volatility.
+    The dashboard uses smile IV as the primary IV when available because it is cleaner
+    than raw observed IV across strikes.
+    """
+    out = options.copy()
+    if out.empty:
+        return out
+
+    out["realized_vol_short"] = pd.to_numeric(out.get("rv_short_ann_proxy", np.nan), errors="coerce")
+    out["realized_vol_long"] = pd.to_numeric(out.get("rv_long_ann_proxy", np.nan), errors="coerce")
+
+    for iv_col, prefix in [("observed_iv", "observed"), ("smile_iv", "smile")]:
+        if iv_col not in out.columns:
+            continue
+        iv = pd.to_numeric(out[iv_col], errors="coerce")
+        out[f"{prefix}_vrp_short"] = iv - out["realized_vol_short"]
+        out[f"{prefix}_vrp_long"] = iv - out["realized_vol_long"]
+        out[f"{prefix}_vrp_ratio_short"] = _safe_div(iv, out["realized_vol_short"])
+        out[f"{prefix}_vrp_ratio_long"] = _safe_div(iv, out["realized_vol_long"])
+
+    if "smile_vrp_long" in out.columns:
+        out["vrp"] = out["smile_vrp_long"]
+        out["vrp_short"] = out.get("smile_vrp_short", np.nan)
+        out["vrp_ratio"] = out.get("smile_vrp_ratio_long", np.nan)
+    elif "observed_vrp_long" in out.columns:
+        out["vrp"] = out["observed_vrp_long"]
+        out["vrp_short"] = out.get("observed_vrp_short", np.nan)
+        out["vrp_ratio"] = out.get("observed_vrp_ratio_long", np.nan)
+    else:
+        out["vrp"] = np.nan
+        out["vrp_short"] = np.nan
+        out["vrp_ratio"] = np.nan
+
+    out["vrp_pct"] = 100.0 * out["vrp"]
+    out["vrp_short_pct"] = 100.0 * out["vrp_short"]
+    out["vrp_z"] = _rolling_zscore_by_product(out, "vrp", cfg.z_window)
+    out["vrp_short_z"] = _rolling_zscore_by_product(out, "vrp_short", cfg.z_window)
+
+    if "iv_residual" in out.columns:
+        out["vrp_residual_combo"] = out["iv_residual"] + out["vrp"]
+        out["vrp_residual_combo_z"] = _rolling_zscore_by_product(out, "vrp_residual_combo", cfg.z_window)
+    else:
+        out["vrp_residual_combo"] = np.nan
+        out["vrp_residual_combo_z"] = np.nan
+
+    return out
 
 
 # =============================================================================
@@ -354,6 +481,74 @@ def implied_vol_call(price: float, S: float, K: float, T: float, r: float = 0.0)
     return 0.5 * (lo + hi)
 
 
+
+def bs_call_price_vectorized(S: Any, K: Any, T: Any, r: float, sigma: Any) -> np.ndarray:
+    S = np.asarray(S, dtype=float)
+    K = np.asarray(K, dtype=float)
+    T = np.asarray(T, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    out = np.maximum(S - K * np.exp(-r * np.maximum(T, 0.0)), 0.0)
+    good = (S > 0) & (K > 0) & (T > 0) & (sigma > 0) & np.isfinite(S) & np.isfinite(K) & np.isfinite(T) & np.isfinite(sigma)
+    if good.any():
+        sqrtT = np.sqrt(T[good])
+        d1 = (np.log(S[good] / K[good]) + (r + 0.5 * sigma[good] * sigma[good]) * T[good]) / (sigma[good] * sqrtT)
+        d2 = d1 - sigma[good] * sqrtT
+        out[good] = S[good] * _norm_cdf(d1) - K[good] * np.exp(-r * T[good]) * _norm_cdf(d2)
+    out[~np.isfinite(out)] = np.nan
+    return out
+
+
+def implied_vol_call_vectorized(price: Any, S: Any, K: Any, T: Any, r: float = 0.0, iterations: int = 32) -> np.ndarray:
+    price = np.asarray(price, dtype=float)
+    S = np.asarray(S, dtype=float)
+    K = np.asarray(K, dtype=float)
+    T = np.asarray(T, dtype=float)
+    iv = np.full_like(price, np.nan, dtype=float)
+    intrinsic = np.maximum(S - K * np.exp(-r * np.maximum(T, 0.0)), 0.0)
+    good = (
+        np.isfinite(price) & np.isfinite(S) & np.isfinite(K) & np.isfinite(T)
+        & (price > 0) & (S > 0) & (K > 0) & (T > 0)
+        & (price >= intrinsic - 1e-7) & (price <= S + 1e-7)
+    )
+    if not good.any():
+        return iv
+    lo = np.full(good.sum(), 1e-5)
+    hi = np.full(good.sum(), 5.0)
+    Sg, Kg, Tg, pg = S[good], K[good], T[good], price[good]
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        val = bs_call_price_vectorized(Sg, Kg, Tg, r, mid)
+        hi = np.where(val > pg, mid, hi)
+        lo = np.where(val <= pg, mid, lo)
+    iv[good] = 0.5 * (lo + hi)
+    return iv
+
+
+def bs_call_greeks_vectorized(S: Any, K: Any, T: Any, r: float, sigma: Any) -> pd.DataFrame:
+    S = np.asarray(S, dtype=float)
+    K = np.asarray(K, dtype=float)
+    T = np.asarray(T, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    n = len(S)
+    delta = np.where(S > K, 1.0, 0.0).astype(float)
+    gamma = np.zeros(n, dtype=float)
+    vega = np.zeros(n, dtype=float)
+    theta = np.zeros(n, dtype=float)
+    rho = np.zeros(n, dtype=float)
+    good = (S > 0) & (K > 0) & (T > 0) & (sigma > 0) & np.isfinite(S) & np.isfinite(K) & np.isfinite(T) & np.isfinite(sigma)
+    if good.any():
+        sqrtT = np.sqrt(T[good])
+        d1 = (np.log(S[good] / K[good]) + (r + 0.5 * sigma[good] * sigma[good]) * T[good]) / (sigma[good] * sqrtT)
+        d2 = d1 - sigma[good] * sqrtT
+        pdf_d1 = _norm_pdf(d1)
+        delta[good] = _norm_cdf(d1)
+        gamma[good] = pdf_d1 / (S[good] * sigma[good] * sqrtT)
+        vega[good] = S[good] * pdf_d1 * sqrtT / 100.0
+        theta[good] = (-(S[good] * pdf_d1 * sigma[good]) / (2.0 * sqrtT) - r * K[good] * np.exp(-r * T[good]) * _norm_cdf(d2)) / 365.0
+        rho[good] = K[good] * T[good] * np.exp(-r * T[good]) * _norm_cdf(d2) / 100.0
+    return pd.DataFrame({"delta": delta, "gamma": gamma, "vega": vega, "theta": theta, "rho": rho})
+
+
 def _estimate_time_to_expiry(df: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.Series:
     # If a T/days_to_expiry column exists, use it. Otherwise linearly decay from default days.
     for col in ["time_to_expiry", "tte", "T", "days_to_expiry", "expiry_days"]:
@@ -362,10 +557,20 @@ def _estimate_time_to_expiry(df: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.Se
             if col in {"days_to_expiry", "expiry_days"}:
                 return (raw / 365.0).clip(lower=1e-6)
             return raw.clip(lower=1e-6)
+
     if "timestamp" not in df.columns or df["timestamp"].nunique() <= 1:
         return pd.Series(cfg.default_days_to_expiry / 365.0, index=df.index)
-    t = df["timestamp"].astype(float)
-    progress = (t - t.min()) / max(t.max() - t.min(), EPS)
+
+    # Round 3 has day 0/1/2 with timestamps restarted each day. Build a monotonic clock.
+    t = pd.to_numeric(df["timestamp"], errors="coerce").astype(float)
+    if "day" in df.columns:
+        day = pd.to_numeric(df["day"], errors="coerce").fillna(0).astype(float)
+        span = max(float(t.max() - t.min()), 1.0)
+        clock = day * (span + 1.0) + t
+    else:
+        clock = t
+
+    progress = (clock - clock.min()) / max(clock.max() - clock.min(), EPS)
     days_left = cfg.default_days_to_expiry - progress * max(cfg.default_days_to_expiry - 1.0, 0.0)
     return (days_left / 365.0).clip(lower=1e-6)
 
@@ -384,7 +589,8 @@ def build_options_dataset(
     if activity.empty or "product" not in activity.columns:
         return {"options": pd.DataFrame(), "underlying": pd.DataFrame(), "trades": trades}
 
-    activity = activity.sort_values([c for c in ["timestamp", "product"] if c in activity.columns]).copy()
+    sort_cols = [c for c in ["day", "timestamp", "product"] if c in activity.columns]
+    activity = activity.sort_values(sort_cols).copy()
 
     products = activity["product"].dropna().unique().tolist()
     underlying_products = [p for p in products if _is_underlying_product(str(p), cfg)]
@@ -401,16 +607,20 @@ def build_options_dataset(
         return {"options": pd.DataFrame(), "underlying": pd.DataFrame(), "trades": trades}
 
     underlying_product = underlying_products[0]
+    time_keys = _time_key_cols(activity)
+
     underlying = activity[activity["product"] == underlying_product].copy()
-    underlying = underlying[[c for c in ["timestamp", "mid_price", "bid_price_1", "ask_price_1"] if c in underlying.columns]]
-    underlying = underlying.rename(columns={"mid_price": "underlying_mid"})
+    keep_underlying_cols = [c for c in [*time_keys, "mid_price", "bid_price_1", "ask_price_1"] if c in underlying.columns]
+    underlying = underlying[keep_underlying_cols].rename(columns={"mid_price": "underlying_mid"})
+    # Critical for Round 3: timestamps repeat across days, so merge on day+timestamp when day exists.
+    underlying = underlying.drop_duplicates(subset=time_keys, keep="last") if time_keys else underlying
 
     options = activity[activity["product"].isin(option_products)].copy()
     options["strike"] = options["product"].map(_infer_strike)
-    options = options.dropna(subset=["strike"])
-    if "timestamp" in options.columns and "timestamp" in underlying.columns:
-        options = options.merge(underlying[["timestamp", "underlying_mid"]], on="timestamp", how="left")
-        options["underlying_mid"] = options["underlying_mid"].ffill().bfill()
+    options = options.dropna(subset=["strike"]).reset_index(drop=True)
+    if time_keys and all(c in underlying.columns for c in time_keys):
+        options = options.merge(underlying[[*time_keys, "underlying_mid"]], on=time_keys, how="left", validate="many_to_one")
+        options["underlying_mid"] = options.groupby("product")["underlying_mid"].ffill().bfill()
     else:
         options["underlying_mid"] = np.nan
 
@@ -424,81 +634,137 @@ def build_options_dataset(
     options["intrinsic"] = np.maximum(options["underlying_mid"] - options["strike"], 0.0)
     options["extrinsic"] = options["mid_price"] - options["intrinsic"]
 
-    options["observed_iv"] = [
-        implied_vol_call(p, s, k, t, cfg.risk_free_rate)
-        for p, s, k, t in zip(options["mid_price"], options["underlying_mid"], options["strike"], options["T"])
-    ]
+    # Vectorized IV is much faster than looping through every row and prevents the dashboard from hanging.
+    options["observed_iv"] = implied_vol_call_vectorized(
+        options["mid_price"].to_numpy(),
+        options["underlying_mid"].to_numpy(),
+        options["strike"].to_numpy(),
+        options["T"].to_numpy(),
+        cfg.risk_free_rate,
+    )
 
     options = _fit_smile_by_timestamp(options)
-    options["fair_price"] = [
-        bs_call_price(s, k, t, cfg.risk_free_rate, iv)
-        if not pd.isna(iv)
-        else np.nan
-        for s, k, t, iv in zip(options["underlying_mid"], options["strike"], options["T"], options["smile_iv"])
-    ]
+
+    options["fair_price"] = bs_call_price_vectorized(
+        options["underlying_mid"].to_numpy(),
+        options["strike"].to_numpy(),
+        options["T"].to_numpy(),
+        cfg.risk_free_rate,
+        options["smile_iv"].to_numpy(),
+    )
     options["mispricing"] = options["mid_price"] - options["fair_price"]
     options["normalized_mispricing"] = _safe_div(options["mispricing"], options["fair_price"])
     options["iv_residual"] = options["observed_iv"] - options["smile_iv"]
 
-    greeks = [
-        bs_call_greeks(s, k, t, cfg.risk_free_rate, iv if not pd.isna(iv) else obs_iv)
-        for s, k, t, iv, obs_iv in zip(
-            options["underlying_mid"], options["strike"], options["T"], options["smile_iv"], options["observed_iv"]
-        )
-    ]
-    greeks_df = pd.DataFrame(greeks, index=options.index)
+    greek_sigma = options["smile_iv"].where(options["smile_iv"].notna(), options["observed_iv"])
+    greeks_df = bs_call_greeks_vectorized(
+        options["underlying_mid"].to_numpy(),
+        options["strike"].to_numpy(),
+        options["T"].to_numpy(),
+        cfg.risk_free_rate,
+        greek_sigma.to_numpy(),
+    )
+    greeks_df.index = options.index
     options = pd.concat([options, greeks_df], axis=1)
 
     options = _add_rolling_stats(options, cfg)
     options = _add_gamma_scalping_ev(options)
     options = _add_signals(options, cfg)
 
-    underlying = _add_underlying_stats(activity[activity["product"] == underlying_product].copy(), cfg)
+    underlying_stats_input = activity[activity["product"] == underlying_product].copy()
+    underlying = _add_underlying_stats(underlying_stats_input, cfg)
     options = _add_cross_sectional_mispricing_features(options, underlying, cfg)
+    options = _add_vrp_features(options, cfg)
+    options = _add_cross_sectional_ranks(options)
+
+    # Keep stores lighter. Raw book fields have already been converted into derived diagnostics.
+    useful_cols = [
+        "day", "timestamp", "product", "strike", "underlying_mid", "mid_price", "bid_price_1", "ask_price_1",
+        "T", "moneyness", "log_moneyness",
+        "observed_iv", "smile_iv", "smile_fit_ok", "fair_price", "mispricing", "normalized_mispricing",
+        "iv_residual", "mispricing_z", "iv_residual_z", "normalized_mispricing_z", "delta", "gamma",
+        "vega", "theta", "rho", "gamma_pnl_est", "theta_cost_est", "net_gamma_scalp_ev",
+        "gamma_theta_ratio", "signal", "rv_short_ann_proxy", "rv_long_ann_proxy", "rv_iv_spread",
+        "rv_iv_spread_short", "realized_vol_short", "realized_vol_long", "vrp", "vrp_pct",
+        "vrp_short", "vrp_short_pct", "vrp_ratio", "vrp_z", "vrp_short_z",
+        "observed_vrp_long", "observed_vrp_short", "smile_vrp_long", "smile_vrp_short",
+        "observed_vrp_ratio_long", "observed_vrp_ratio_short", "smile_vrp_ratio_long", "smile_vrp_ratio_short",
+        "vrp_residual_combo", "vrp_residual_combo_z", "rv_trend", "quoted_spread", "quoted_spread_pct", "book_imbalance",
+        "top_level_depth", "xw_fitted_iv", "xw_iv_mispricing", "xw_price_mispricing",
+        "rv_iv_spread_rank", "rv_iv_spread_decile", "vrp_rank", "vrp_decile",
+        "vrp_residual_combo_rank", "vrp_residual_combo_decile", "iv_residual_rank", "iv_residual_decile",
+        "mispricing_rank", "mispricing_decile", "xw_iv_mispricing_rank", "xw_iv_mispricing_decile",
+        "xw_price_mispricing_rank", "xw_price_mispricing_decile", "delta_hedged_return_proxy",
+    ]
+    options = options[[c for c in useful_cols if c in options.columns]]
 
     return {"options": options, "underlying": underlying, "trades": trades}
 
 
 def _fit_smile_by_timestamp(options: pd.DataFrame) -> pd.DataFrame:
-    out = options.copy()
+    """Fast per-day/timestamp smile fit.
+
+    The original version used many pandas .loc writes inside 30k tiny groups. Round 3 has
+    roughly 10 option rows per timestamp across 3 days, so array writes are much faster.
+    """
+    out = options.reset_index(drop=True).copy()
+    n = len(out)
     out["smile_iv"] = np.nan
     out["smile_fit_ok"] = False
     out["smile_a"] = np.nan
     out["smile_b"] = np.nan
     out["smile_c"] = np.nan
 
-    if "timestamp" not in out.columns:
+    time_keys = _time_key_cols(out)
+    if not time_keys or n == 0:
         return out
 
-    for ts, idx in out.groupby("timestamp").groups.items():
-        sub = out.loc[idx]
-        good = sub[["log_moneyness", "observed_iv", "extrinsic"]].replace([np.inf, -np.inf], np.nan).dropna()
-        good = good[good["observed_iv"].between(1e-4, 5.0)]
-        # Ignore points where option is basically intrinsic only because IV inversion gets unstable.
-        good = good[good["extrinsic"] > 0.25]
+    x_all = out["log_moneyness"].to_numpy(dtype=float)
+    y_all = out["observed_iv"].to_numpy(dtype=float)
+    extr_all = out["extrinsic"].to_numpy(dtype=float)
 
-        if len(good) >= 3:
-            x = good["log_moneyness"].to_numpy(dtype=float)
-            y = good["observed_iv"].to_numpy(dtype=float)
+    smile_iv = np.full(n, np.nan, dtype=float)
+    smile_ok = np.zeros(n, dtype=bool)
+    smile_a = np.full(n, np.nan, dtype=float)
+    smile_b = np.full(n, np.nan, dtype=float)
+    smile_c = np.full(n, np.nan, dtype=float)
+
+    # observed_iv must be finite and in a sane range; extrinsic > 0.25 avoids unstable near-intrinsic IV points.
+    for _, idx in out.groupby(time_keys, sort=False, dropna=False).indices.items():
+        idx = np.asarray(idx, dtype=int)
+        valid = (
+            np.isfinite(x_all[idx])
+            & np.isfinite(y_all[idx])
+            & (y_all[idx] >= 1e-4)
+            & (y_all[idx] <= 5.0)
+            & np.isfinite(extr_all[idx])
+            & (extr_all[idx] > 0.25)
+        )
+        good_idx = idx[valid]
+        if len(good_idx) >= 3:
             try:
-                coef = np.polyfit(x, y, deg=2)
-                pred = np.polyval(coef, sub["log_moneyness"].to_numpy(dtype=float))
-                out.loc[idx, "smile_iv"] = pred
-                out.loc[idx, "smile_fit_ok"] = True
-                out.loc[idx, ["smile_a", "smile_b", "smile_c"]] = coef
+                coef = np.polyfit(x_all[good_idx], y_all[good_idx], deg=2)
+                smile_iv[idx] = np.polyval(coef, x_all[idx])
+                smile_ok[idx] = True
+                smile_a[idx], smile_b[idx], smile_c[idx] = coef
+                continue
             except Exception:
-                out.loc[idx, "smile_iv"] = sub["observed_iv"].median()
-        else:
-            # If there are too few strikes, use cross-sectional median as a conservative fallback.
-            fallback = good["observed_iv"].median() if len(good) else sub["observed_iv"].median()
-            out.loc[idx, "smile_iv"] = fallback
+                pass
 
-    out["smile_iv"] = out["smile_iv"].clip(lower=1e-5, upper=5.0)
+        fallback_vals = y_all[good_idx] if len(good_idx) else y_all[idx][np.isfinite(y_all[idx])]
+        fallback = float(np.nanmedian(fallback_vals)) if len(fallback_vals) else np.nan
+        smile_iv[idx] = fallback
+
+    out["smile_iv"] = pd.Series(smile_iv).clip(lower=1e-5, upper=5.0)
+    out["smile_fit_ok"] = smile_ok
+    out["smile_a"] = smile_a
+    out["smile_b"] = smile_b
+    out["smile_c"] = smile_c
     return out
 
 
 def _add_rolling_stats(options: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.DataFrame:
-    out = options.sort_values(["product", "timestamp"]).copy()
+    out = options.sort_values([c for c in ["product", "day", "timestamp"] if c in options.columns]).copy()
     for col in ["mispricing", "iv_residual", "normalized_mispricing"]:
         mean_col = f"{col}_roll_mean"
         std_col = f"{col}_roll_std"
@@ -518,7 +784,7 @@ def _add_rolling_stats(options: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.Dat
 
 
 def _add_gamma_scalping_ev(options: pd.DataFrame) -> pd.DataFrame:
-    out = options.sort_values(["product", "timestamp"]).copy()
+    out = options.sort_values([c for c in ["product", "day", "timestamp"] if c in options.columns]).copy()
     out["underlying_change"] = out.groupby("product")["underlying_mid"].diff()
     out["gamma_pnl_est"] = 0.5 * out["gamma"] * (out["underlying_change"] ** 2)
     out["theta_cost_est"] = out["theta"]  # already per-day Black-Scholes theta, usually negative
@@ -541,7 +807,7 @@ def _add_underlying_stats(underlying: pd.DataFrame, cfg: OptionsStatsConfig) -> 
     out = _normalize_columns(underlying)
     if out.empty or "mid_price" not in out.columns:
         return out
-    out = out.sort_values("timestamp").copy() if "timestamp" in out.columns else out.copy()
+    out = out.sort_values([c for c in ["day", "timestamp"] if c in out.columns]).copy() if "timestamp" in out.columns else out.copy()
     out["return"] = out["mid_price"].pct_change()
     out["fast_ema"] = out["mid_price"].ewm(span=cfg.rolling_window, adjust=False).mean()
     out["ema_deviation"] = out["mid_price"] - out["fast_ema"]
@@ -617,7 +883,8 @@ def compute_greeks_summary(options: pd.DataFrame) -> pd.DataFrame:
 def compute_latest_signal_table(options: pd.DataFrame) -> pd.DataFrame:
     if options.empty or "timestamp" not in options.columns:
         return pd.DataFrame()
-    idx = options.groupby("product")["timestamp"].idxmax()
+    latest = _latest_slice(options)
+    idx = latest.groupby("product")["timestamp"].idxmax()
     cols = [
         "timestamp",
         "product",
@@ -627,6 +894,13 @@ def compute_latest_signal_table(options: pd.DataFrame) -> pd.DataFrame:
         "observed_iv",
         "smile_iv",
         "iv_residual",
+        "realized_vol_long",
+        "vrp",
+        "vrp_pct",
+        "vrp_z",
+        "vrp_ratio",
+        "vrp_residual_combo",
+        "vrp_residual_combo_z",
         "fair_price",
         "mispricing",
         "mispricing_z",
@@ -637,7 +911,7 @@ def compute_latest_signal_table(options: pd.DataFrame) -> pd.DataFrame:
         "gamma_theta_ratio",
         "signal",
     ]
-    return options.loc[idx, [c for c in cols if c in options.columns]].sort_values("strike").round(6)
+    return latest.loc[idx, [c for c in cols if c in latest.columns]].sort_values("strike").round(6)
 
 
 def compute_risk_table(options: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
@@ -696,22 +970,67 @@ def compute_strategy_attribution(options: pd.DataFrame, trades: pd.DataFrame) ->
 # Figures
 # =============================================================================
 
+def _repair_options_for_plotting(options: pd.DataFrame) -> pd.DataFrame:
+    """Make stored/cached options data robust after reloads or older builds.
+
+    Dash can keep an old dcc.Store payload in the browser after code changes. This
+    helper recreates lightweight derived columns that plots need instead of throwing
+    KeyError.
+    """
+    if options is None or options.empty:
+        return pd.DataFrame()
+    out = options.copy()
+    for col in ["timestamp", "strike", "underlying_mid", "mid_price", "observed_iv", "smile_iv"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "strike" not in out.columns and "product" in out.columns:
+        out["strike"] = out["product"].map(_infer_strike)
+    if "log_moneyness" not in out.columns and {"underlying_mid", "strike"}.issubset(out.columns):
+        out["log_moneyness"] = np.log(_safe_div(out["underlying_mid"], out["strike"]))
+    if "moneyness" not in out.columns and {"underlying_mid", "strike"}.issubset(out.columns):
+        out["moneyness"] = _safe_div(out["underlying_mid"], out["strike"])
+    if "observed_iv" not in out.columns:
+        out["observed_iv"] = np.nan
+    if "smile_iv" not in out.columns:
+        out["smile_iv"] = out["observed_iv"]
+    if "iv_residual" not in out.columns and {"observed_iv", "smile_iv"}.issubset(out.columns):
+        out["iv_residual"] = pd.to_numeric(out["observed_iv"], errors="coerce") - pd.to_numeric(out["smile_iv"], errors="coerce")
+    return out
+
+
 def fig_vol_smile(options: pd.DataFrame, timestamp: Optional[float] = None) -> go.Figure:
+    options = _repair_options_for_plotting(options)
     if options.empty:
-        return _empty_fig("Volatility Smile")
+        return _empty_fig("Volatility Smile", "No options data available. Click Build / Parse Options Data first.")
     df = options.copy()
-    if timestamp is None and "timestamp" in df.columns:
-        timestamp = df["timestamp"].max()
-    if timestamp is not None and "timestamp" in df.columns:
+
+    required_base = {"log_moneyness", "observed_iv", "smile_iv"}
+    missing = sorted(required_base - set(df.columns))
+    if missing:
+        return _empty_fig("Volatility Smile", f"Missing required columns after repair: {missing}")
+
+    if timestamp is None:
+        if "timestamp" in df.columns:
+            usable = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["log_moneyness", "observed_iv"])
+            if not usable.empty:
+                latest_ts = usable["timestamp"].max()
+                df = df[df["timestamp"] == latest_ts]
+                timestamp = latest_ts
+            else:
+                df = _latest_slice(df)
+                timestamp = df["timestamp"].max() if "timestamp" in df.columns and not df.empty else None
+    elif "timestamp" in df.columns:
         df = df[df["timestamp"] == timestamp]
-    df = df.dropna(subset=["log_moneyness", "observed_iv", "smile_iv"])
+
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["log_moneyness", "observed_iv", "smile_iv"])
     if df.empty:
-        return _empty_fig("Volatility Smile", "No IV data available")
+        return _empty_fig("Volatility Smile", "No IV data available at the selected/latest timestamp")
 
     df = df.sort_values("log_moneyness")
+    label = df["strike"] if "strike" in df.columns else df.get("product", None)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["log_moneyness"], y=df["observed_iv"], mode="markers+text", text=df["strike"],
+        x=df["log_moneyness"], y=df["observed_iv"], mode="markers+text", text=label,
         textposition="top center", name="Observed IV"
     ))
     fig.add_trace(go.Scatter(
@@ -722,7 +1041,6 @@ def fig_vol_smile(options: pd.DataFrame, timestamp: Optional[float] = None) -> g
         xaxis_title="log(S/K)", yaxis_title="Implied volatility", template="plotly_white", height=470,
     )
     return fig
-
 
 def fig_iv_residuals(options: pd.DataFrame) -> go.Figure:
     if options.empty or "iv_residual" not in options.columns:
@@ -852,14 +1170,16 @@ def _add_cross_sectional_mispricing_features(options: pd.DataFrame, underlying: 
         return out
     u = underlying.copy()
     if not u.empty and {"timestamp", "mid_price"}.issubset(u.columns):
-        u = u.sort_values("timestamp")
+        u = u.sort_values([c for c in ["day", "timestamp"] if c in u.columns])
         u["underlying_log_return"] = np.log(u["mid_price"]).diff()
         u["rv_short"] = u["underlying_log_return"].rolling(max(5, cfg.rolling_window // 2), min_periods=5).std()
         u["rv_long"] = u["underlying_log_return"].rolling(max(10, cfg.rolling_window * 2), min_periods=10).std()
         u["rv_trend"] = u["rv_short"] - u["rv_long"]
         u["rv_short_ann_proxy"] = u["rv_short"] * np.sqrt(365.0)
         u["rv_long_ann_proxy"] = u["rv_long"] * np.sqrt(365.0)
-        out = out.merge(u[["timestamp", "rv_short", "rv_long", "rv_trend", "rv_short_ann_proxy", "rv_long_ann_proxy"]], on="timestamp", how="left")
+        time_keys = _time_key_cols(out)
+        merge_cols = [*time_keys, "rv_short", "rv_long", "rv_trend", "rv_short_ann_proxy", "rv_long_ann_proxy"]
+        out = out.merge(u[[c for c in merge_cols if c in u.columns]].drop_duplicates(subset=time_keys), on=time_keys, how="left")
     else:
         for c in ["rv_short", "rv_long", "rv_trend", "rv_short_ann_proxy", "rv_long_ann_proxy"]:
             out[c] = np.nan
@@ -884,55 +1204,43 @@ def _add_cross_sectional_mispricing_features(options: pd.DataFrame, underlying: 
 
 
 def _add_xu_wang_residual(options: pd.DataFrame) -> pd.DataFrame:
+    """Pooled Xu-Wang style IV residual.
+
+    A per-timestamp least-squares regression is too slow for the full Round 3 upload.
+    This keeps the same idea, but uses one pooled cross-sectional/time-series fit.
+    """
     out = options.copy()
     out["xw_fitted_iv"] = np.nan
     out["xw_iv_mispricing"] = np.nan
     out["xw_price_mispricing"] = np.nan
     out["xw_model_ok"] = False
+
     features = ["rv_short_ann_proxy", "rv_long_ann_proxy", "log_moneyness", "T", "quoted_spread_pct", "book_imbalance", "top_level_depth"]
     available = [c for c in features if c in out.columns]
     if not available or "observed_iv" not in out.columns:
         return out
-    if "timestamp" in out.columns:
-        for _ts, idx in out.groupby("timestamp").groups.items():
-            sub = out.loc[idx, available + ["observed_iv"]].replace([np.inf, -np.inf], np.nan)
-            good = sub.dropna(subset=["observed_iv"])
-            useful = [c for c in available if good[c].notna().sum() >= 3 and good[c].nunique(dropna=True) > 1]
-            if len(good) >= max(3, len(useful) + 1) and useful:
-                try:
-                    med = good[useful].median()
-                    X = good[useful].fillna(med).to_numpy(dtype=float)
-                    X = np.column_stack([np.ones(len(X)), X])
-                    y = good["observed_iv"].to_numpy(dtype=float)
-                    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-                    X_all = out.loc[idx, useful].replace([np.inf, -np.inf], np.nan).fillna(med).to_numpy(dtype=float)
-                    X_all = np.column_stack([np.ones(len(X_all)), X_all])
-                    out.loc[idx, "xw_fitted_iv"] = X_all @ beta
-                    out.loc[idx, "xw_model_ok"] = True
-                except Exception:
-                    pass
-    missing = out["xw_fitted_iv"].isna()
+
     pooled = out[available + ["observed_iv"]].replace([np.inf, -np.inf], np.nan).dropna(subset=["observed_iv"])
-    useful = [c for c in available if pooled[c].notna().sum() >= 10 and pooled[c].nunique(dropna=True) > 1]
-    if missing.any() and len(pooled) >= max(20, len(useful) + 5) and useful:
+    useful = [c for c in available if pooled[c].notna().sum() >= 20 and pooled[c].nunique(dropna=True) > 1]
+    if len(pooled) >= max(50, len(useful) + 5) and useful:
         try:
             med = pooled[useful].median()
             X = pooled[useful].fillna(med).to_numpy(dtype=float)
             X = np.column_stack([np.ones(len(X)), X])
             y = pooled["observed_iv"].to_numpy(dtype=float)
             beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-            X_all = out.loc[missing, useful].replace([np.inf, -np.inf], np.nan).fillna(med).to_numpy(dtype=float)
+
+            X_all = out[useful].replace([np.inf, -np.inf], np.nan).fillna(med).to_numpy(dtype=float)
             X_all = np.column_stack([np.ones(len(X_all)), X_all])
-            out.loc[missing, "xw_fitted_iv"] = X_all @ beta
-            out.loc[missing, "xw_model_ok"] = True
+            out["xw_fitted_iv"] = X_all @ beta
+            out["xw_model_ok"] = True
         except Exception:
             pass
+
     out["xw_iv_mispricing"] = out["observed_iv"] - out["xw_fitted_iv"]
-    out["xw_price_mispricing"] = [
-        bs_call_price(s, k, t, 0.0, iv) - bs_call_price(s, k, t, 0.0, fit_iv)
-        if not any(pd.isna(x) for x in [s, k, t, iv, fit_iv]) else np.nan
-        for s, k, t, iv, fit_iv in zip(out["underlying_mid"], out["strike"], out["T"], out["observed_iv"], out["xw_fitted_iv"])
-    ]
+    price_obs = bs_call_price_vectorized(out["underlying_mid"], out["strike"], out["T"], 0.0, out["observed_iv"])
+    price_fit = bs_call_price_vectorized(out["underlying_mid"], out["strike"], out["T"], 0.0, out["xw_fitted_iv"])
+    out["xw_price_mispricing"] = price_obs - price_fit
     return out
 
 
@@ -946,22 +1254,31 @@ def _safe_qcut(s: pd.Series, q: int = 10) -> pd.Series:
 
 def _add_cross_sectional_ranks(options: pd.DataFrame) -> pd.DataFrame:
     out = options.copy()
-    rank_cols = ["rv_iv_spread", "iv_residual", "mispricing", "xw_iv_mispricing", "xw_price_mispricing"]
-    if "timestamp" not in out.columns:
-        for c in rank_cols:
-            if c in out.columns:
-                out[f"{c}_rank"] = out[c].rank(pct=True)
-                out[f"{c}_decile"] = _safe_qcut(out[c], 10)
-        return out
+    rank_cols = [
+        "rv_iv_spread",
+        "vrp",
+        "vrp_residual_combo",
+        "iv_residual",
+        "mispricing",
+        "xw_iv_mispricing",
+        "xw_price_mispricing",
+    ]
+    time_keys = _time_key_cols(out)
+
     for c in rank_cols:
-        if c in out.columns:
-            out[f"{c}_rank"] = out.groupby("timestamp")[c].rank(pct=True)
-            out[f"{c}_decile"] = out.groupby("timestamp", group_keys=False)[c].apply(_safe_qcut)
+        if c not in out.columns:
+            continue
+        if time_keys:
+            pct = out.groupby(time_keys)[c].rank(pct=True)
+        else:
+            pct = out[c].rank(pct=True)
+        out[f"{c}_rank"] = pct
+        out[f"{c}_decile"] = np.ceil(pct * 10.0).clip(lower=1, upper=10)
     return out
 
 
 def _add_delta_hedged_return_proxy(options: pd.DataFrame) -> pd.DataFrame:
-    out = options.sort_values(["product", "timestamp"]).copy() if "timestamp" in options.columns else options.copy()
+    out = options.sort_values([c for c in ["product", "day", "timestamp"] if c in options.columns]).copy() if "timestamp" in options.columns else options.copy()
     out["option_price_change"] = out.groupby("product")["mid_price"].diff()
     out["underlying_price_change_for_hedge"] = out.groupby("product")["underlying_mid"].diff()
     out["lag_delta"] = out.groupby("product")["delta"].shift(1)
@@ -973,9 +1290,10 @@ def _add_delta_hedged_return_proxy(options: pd.DataFrame) -> pd.DataFrame:
 def compute_cross_sectional_signal_table(options: pd.DataFrame) -> pd.DataFrame:
     if options.empty or "timestamp" not in options.columns:
         return pd.DataFrame()
-    idx = options.groupby("product")["timestamp"].idxmax()
-    cols = ["timestamp", "product", "strike", "observed_iv", "rv_long_ann_proxy", "rv_iv_spread", "rv_iv_spread_decile", "xw_fitted_iv", "xw_iv_mispricing", "xw_iv_mispricing_decile", "xw_price_mispricing", "rv_trend", "quoted_spread", "book_imbalance", "delta_hedged_return_proxy", "signal"]
-    return options.loc[idx, [c for c in cols if c in options.columns]].sort_values("strike").round(6)
+    latest = _latest_slice(options)
+    idx = latest.groupby("product")["timestamp"].idxmax()
+    cols = ["timestamp", "product", "strike", "observed_iv", "rv_long_ann_proxy", "realized_vol_long", "rv_iv_spread", "rv_iv_spread_decile", "vrp", "vrp_z", "vrp_decile", "vrp_residual_combo", "vrp_residual_combo_z", "vrp_residual_combo_decile", "xw_fitted_iv", "xw_iv_mispricing", "xw_iv_mispricing_decile", "xw_price_mispricing", "rv_trend", "quoted_spread", "book_imbalance", "delta_hedged_return_proxy", "signal"]
+    return latest.loc[idx, [c for c in cols if c in latest.columns]].sort_values("strike").round(6)
 
 
 def compute_double_sort_table(options: pd.DataFrame) -> pd.DataFrame:
@@ -999,6 +1317,387 @@ def fig_rv_iv_spread(options: pd.DataFrame) -> go.Figure:
     fig.update_layout(template="plotly_white", height=450)
     return fig
 
+
+def fig_vrp(options: pd.DataFrame) -> go.Figure:
+    if options.empty or "vrp" not in options.columns:
+        return _empty_fig("Volatility Risk Premium")
+    fig = px.line(
+        options,
+        x="timestamp",
+        y="vrp",
+        color="product",
+        title="Volatility Risk Premium: Fitted IV minus Realized Volatility",
+    )
+    fig.add_hline(y=0, line_dash="dash")
+    fig.update_layout(template="plotly_white", height=450, yaxis_title="VRP")
+    return fig
+
+
+def fig_vrp_zscore(options: pd.DataFrame) -> go.Figure:
+    if options.empty or "vrp_z" not in options.columns:
+        return _empty_fig("VRP Z-Score")
+    fig = px.line(
+        options,
+        x="timestamp",
+        y="vrp_z",
+        color="product",
+        title="Volatility Risk Premium Z-Score",
+    )
+    for y, name in [(1.5, "rich vol"), (-1.5, "cheap vol"), (0, "neutral")]:
+        fig.add_hline(y=y, line_dash="dash", annotation_text=name)
+    fig.update_layout(template="plotly_white", height=450, yaxis_title="VRP z-score")
+    return fig
+
+def _add_display_day_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Map raw day labels to dashboard Day 0, Day 1, Day 2 labels.
+
+    Prosperity uploads often use raw day labels like -1, 0, 1, while the dashboard
+    sections are labeled Day 0, Day 1, Day 2. This helper keeps the raw day in
+    raw_day and adds display_day = 0, 1, 2 based on sorted trading-day order.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if "day" not in out.columns:
+        out["day"] = 0
+
+    out["raw_day"] = pd.to_numeric(out["day"], errors="coerce").fillna(0).astype(int)
+    ordered_days = sorted(out["raw_day"].dropna().unique().tolist())
+    day_map = {raw_day: i for i, raw_day in enumerate(ordered_days)}
+    out["display_day"] = out["raw_day"].map(day_map).astype("Int64")
+    return out
+
+
+def _midday_option_slice_by_day(options: pd.DataFrame) -> pd.DataFrame:
+    """Return one representative mid-day options slice per displayed trading day.
+
+    Uses display_day labels so raw Prosperity days -1/0/1 still render as
+    dashboard Day 0/1/2.
+    """
+    options = _repair_options_for_plotting(options)
+    if options.empty or "timestamp" not in options.columns:
+        return pd.DataFrame()
+
+    out = options.copy()
+    out["timestamp"] = pd.to_numeric(out["timestamp"], errors="coerce")
+    out = out.dropna(subset=["timestamp"])
+    if out.empty:
+        return pd.DataFrame()
+
+    out = _add_display_day_labels(out)
+
+    frames: list[pd.DataFrame] = []
+    for display_day, sub in out.groupby("display_day", sort=True):
+        if sub.empty:
+            continue
+        target_ts = float(sub["timestamp"].median())
+        available_ts = sub["timestamp"].dropna().unique()
+        if len(available_ts) == 0:
+            continue
+        selected_ts = min(available_ts, key=lambda x: abs(float(x) - target_ts))
+        frames.append(sub[sub["timestamp"] == selected_ts].copy())
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+def _option_smile_axis(df: pd.DataFrame) -> pd.Series:
+    """Use the normalized moneyness axis from the screenshot when possible."""
+    if {"strike", "underlying_mid", "T"}.issubset(df.columns):
+        sqrt_t = np.sqrt(pd.to_numeric(df["T"], errors="coerce").clip(lower=EPS))
+        return pd.Series(
+            np.log(_safe_div(pd.to_numeric(df["strike"], errors="coerce"), pd.to_numeric(df["underlying_mid"], errors="coerce"))) / sqrt_t,
+            index=df.index,
+        )
+    if "log_moneyness" in df.columns:
+        return -pd.to_numeric(df["log_moneyness"], errors="coerce")
+    return pd.Series(np.nan, index=df.index)
+
+
+def fig_daily_smile_outliers(options: pd.DataFrame) -> go.Figure:
+    """Show one mid-day IV smile panel per day, with strike labels and fitted smile."""
+    df = _midday_option_slice_by_day(options)
+    if df.empty:
+        return _empty_fig("The Smile and Its Outliers", "No options data available for daily smile panels")
+
+    required = {"observed_iv", "smile_iv", "strike"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        return _empty_fig("The Smile and Its Outliers", f"Missing required columns: {missing}")
+
+    df = df.copy()
+    df["smile_axis"] = _option_smile_axis(df)
+    df["observed_iv_pct"] = 100.0 * pd.to_numeric(df["observed_iv"], errors="coerce")
+    df["smile_iv_pct"] = 100.0 * pd.to_numeric(df["smile_iv"], errors="coerce")
+    df["strike_label"] = pd.to_numeric(df["strike"], errors="coerce").round(0).astype("Int64").astype(str)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["smile_axis", "observed_iv_pct", "strike"])
+    if df.empty:
+        return _empty_fig("The Smile and Its Outliers", "No usable IV smile points found")
+
+    if "display_day" not in df.columns:
+        df = _add_display_day_labels(df)
+    days = sorted(df["display_day"].dropna().astype(int).unique().tolist()) if "display_day" in df.columns else [0]
+    ncols = min(max(len(days), 1), 4)
+    fig = make_subplots(
+        rows=1,
+        cols=ncols,
+        subplot_titles=[f"Day {int(day)} IV Smile at mid-day" for day in days[:ncols]],
+        shared_yaxes=True,
+    )
+
+    palette = px.colors.qualitative.Plotly
+    for col_idx, day in enumerate(days[:ncols], start=1):
+        sub = df[df["display_day"] == day].sort_values("smile_axis").copy() if "display_day" in df.columns else df.sort_values("smile_axis").copy()
+        if sub.empty:
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=sub["smile_axis"],
+                y=sub["observed_iv_pct"],
+                mode="markers+text",
+                text=sub["strike_label"],
+                textposition="top center",
+                marker=dict(size=9, color=[palette[i % len(palette)] for i in range(len(sub))]),
+                name=f"Day {int(day)} observed IV",
+                showlegend=False,
+                hovertemplate="Strike %{text}<br>m=%{x:.3f}<br>IV=%{y:.2f}%<extra></extra>",
+            ),
+            row=1,
+            col=col_idx,
+        )
+
+        fit_sub = sub.dropna(subset=["smile_iv_pct"]).copy()
+        if len(fit_sub) >= 3:
+            # If the data contains deep wing strikes like 4000/4500, exclude them from the dashed fit display.
+            non_wing = fit_sub[fit_sub["strike"] > 4500]
+            if len(non_wing) >= 3:
+                fit_sub = non_wing
+        fit_sub = fit_sub.sort_values("smile_axis")
+        fig.add_trace(
+            go.Scatter(
+                x=fit_sub["smile_axis"],
+                y=fit_sub["smile_iv_pct"],
+                mode="lines",
+                line=dict(dash="dash", width=2, color="gray"),
+                name="Fitted smile",
+                showlegend=(col_idx == 1),
+                hovertemplate="m=%{x:.3f}<br>Fitted IV=%{y:.2f}%<extra></extra>",
+            ),
+            row=1,
+            col=col_idx,
+        )
+
+        fig.update_xaxes(title_text="Moneyness m = log(K/S) / sqrt(T)", row=1, col=col_idx)
+
+    fig.update_yaxes(title_text="Implied Vol (%)", row=1, col=1)
+    fig.update_layout(
+        title="The Smile and Its Outliers",
+        template="plotly_white",
+        height=470,
+        margin=dict(l=60, r=30, t=80, b=70),
+    )
+    return fig
+
+
+
+
+def fig_single_day_iv_smile(options: pd.DataFrame, day: int) -> go.Figure:
+    """Large standalone IV smile plot for one displayed trading day.
+
+    The day argument is the displayed dashboard day, not necessarily the raw CSV day.
+    For example, raw days -1/0/1 become displayed Day 0/1/2.
+    """
+    df = _midday_option_slice_by_day(options)
+    if df.empty:
+        return _empty_fig(f"Day {day} IV Smile", "No options data available for this day")
+
+    if "display_day" not in df.columns:
+        df = _add_display_day_labels(df)
+
+    available_days = sorted(df["display_day"].dropna().astype(int).unique().tolist()) if "display_day" in df.columns else []
+    df = df[df["display_day"] == int(day)].copy()
+    if df.empty:
+        return _empty_fig(
+            f"Day {day} IV Smile",
+            f"No mid-day option slice found for displayed day {day}. Available displayed days: {available_days}",
+        )
+
+    required = {"observed_iv", "smile_iv", "strike"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        return _empty_fig(f"Day {day} IV Smile", f"Missing required columns: {missing}")
+
+    df["smile_axis"] = _option_smile_axis(df)
+    df["observed_iv_pct"] = 100.0 * pd.to_numeric(df["observed_iv"], errors="coerce")
+    df["smile_iv_pct"] = 100.0 * pd.to_numeric(df["smile_iv"], errors="coerce")
+    df["iv_residual_pct"] = 100.0 * pd.to_numeric(df.get("iv_residual", np.nan), errors="coerce")
+    df["strike_label"] = pd.to_numeric(df["strike"], errors="coerce").round(0).astype("Int64").astype(str)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["smile_axis", "observed_iv_pct", "strike"])
+    if df.empty:
+        return _empty_fig(f"Day {day} IV Smile", "No usable IV smile points found")
+
+    df = df.sort_values("smile_axis")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df["smile_axis"],
+            y=df["observed_iv_pct"],
+            mode="markers+text",
+            text=df["strike_label"],
+            textposition="top center",
+            marker=dict(
+                size=13,
+                color=df["iv_residual_pct"],
+                colorscale=[
+                    [0.00, "#08306b"],
+                    [0.25, "#2171b5"],
+                    [0.50, "#f7f7f7"],
+                    [0.75, "#de2d26"],
+                    [1.00, "#67000d"],
+                ],
+                cmid=0,
+                colorbar=dict(title="IV residual (%)"),
+                line=dict(width=1.2, color="black"),
+            ),
+            name="Observed IV",
+            hovertemplate="Strike %{text}<br>m=%{x:.3f}<br>IV=%{y:.2f}%<br>Residual=%{marker.color:+.2f}%<extra></extra>",
+        )
+    )
+
+    fit_sub = df.dropna(subset=["smile_iv_pct"]).copy()
+    if len(fit_sub) >= 3:
+        non_wing = fit_sub[fit_sub["strike"] > 4500]
+        if len(non_wing) >= 3:
+            fit_sub = non_wing
+    fit_sub = fit_sub.sort_values("smile_axis")
+    fig.add_trace(
+        go.Scatter(
+            x=fit_sub["smile_axis"],
+            y=fit_sub["smile_iv_pct"],
+            mode="lines",
+            line=dict(dash="dash", width=2.5, color="gray"),
+            name="Fitted smile",
+            hovertemplate="m=%{x:.3f}<br>Fitted IV=%{y:.2f}%<extra></extra>",
+        )
+    )
+
+    raw_day_text = ""
+    if "raw_day" in df.columns and df["raw_day"].notna().any():
+        raw_day_text = f" (raw day {int(df['raw_day'].iloc[0])})"
+
+    fig.add_hline(y=0, line_dash="dot", opacity=0.25)
+    fig.update_layout(
+        title=f"Day {day} IV Smile at Mid-Day{raw_day_text}",
+        xaxis_title="Moneyness m = log(K/S) / sqrt(T)",
+        yaxis_title="Implied Vol (%)",
+        template="plotly_white",
+        height=560,
+        margin=dict(l=70, r=40, t=80, b=70),
+    )
+    return fig
+
+def fig_mispricing_heatmap(options: pd.DataFrame) -> go.Figure:
+    """Mean IV residual heatmap by displayed day and strike.
+
+    Shows exactly one row per displayed trading day, so raw Prosperity days like
+    -1/0/1 are rendered as Day 0/1/2. Negative residuals are cheap and positive
+    residuals are rich.
+    """
+    options = _repair_options_for_plotting(options)
+    if options.empty or "iv_residual" not in options.columns:
+        return _empty_fig("Mispricing Heatmap", "Need IV residuals from observed IV minus fitted smile")
+
+    df = options.copy()
+    df = _add_display_day_labels(df)
+
+    if "strike" not in df.columns and "product" in df.columns:
+        df["strike"] = df["product"].map(_infer_strike)
+
+    df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
+    df["iv_residual_pct"] = 100.0 * pd.to_numeric(df["iv_residual"], errors="coerce")
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["display_day", "strike", "iv_residual_pct"])
+    if df.empty:
+        return _empty_fig("Mispricing Heatmap", "No usable IV residual data found")
+
+    pivot = (
+        df.groupby(["display_day", "strike"], as_index=False)["iv_residual_pct"]
+        .mean()
+        .pivot(index="display_day", columns="strike", values="iv_residual_pct")
+        .sort_index()
+        .sort_index(axis=1)
+    )
+
+    # Force the heatmap to keep one row for each displayed trading day present in the upload.
+    all_days = sorted(df["display_day"].dropna().astype(int).unique().tolist())
+    pivot = pivot.reindex(all_days)
+
+    if pivot.empty:
+        return _empty_fig("Mispricing Heatmap", "No day by strike residual grid found")
+
+    try:
+        text = pivot.map(lambda x: "" if pd.isna(x) else f"{x:+.2f}").to_numpy()
+    except AttributeError:
+        text = pivot.applymap(lambda x: "" if pd.isna(x) else f"{x:+.2f}").to_numpy()
+
+    z = pivot.to_numpy(dtype=float)
+    finite_abs = np.abs(z[np.isfinite(z)])
+    if finite_abs.size:
+        # Use a robust cap so small but meaningful residuals still show strong color.
+        robust_cap = float(np.nanpercentile(finite_abs, 85))
+        max_abs = float(np.nanmax(finite_abs))
+        color_cap = max(0.05, min(max_abs, robust_cap if robust_cap > EPS else max_abs))
+    else:
+        color_cap = 1.0
+
+    strike_labels = [str(int(c)) if float(c).is_integer() else str(c) for c in pivot.columns]
+    day_labels = [f"Day {int(i)}" for i in pivot.index]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=strike_labels,
+            y=day_labels,
+            text=text,
+            texttemplate="%{text}",
+            textfont={"size": 14, "color": "black"},
+            colorscale=[
+                [0.00, "#08306b"],
+                [0.18, "#2171b5"],
+                [0.36, "#6baed6"],
+                [0.50, "#f7f7f7"],
+                [0.64, "#fcae91"],
+                [0.82, "#de2d26"],
+                [1.00, "#67000d"],
+            ],
+            zmid=0,
+            zmin=-color_cap,
+            zmax=color_cap,
+            xgap=2,
+            ygap=2,
+            colorbar=dict(title="IV residual (%)"),
+            hovertemplate="%{y}<br>Strike %{x}<br>Mean IV residual %{z:+.3f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title="Mispricing Heatmap: Mean IV Residual vs Smile Fit",
+        xaxis_title="Strike",
+        yaxis_title="Trading day",
+        template="plotly_white",
+        height=540,
+        margin=dict(l=80, r=40, t=90, b=70),
+        annotations=[
+            dict(
+                text="Blue = CHEAP, IV below fitted smile. Red = RICH, IV above fitted smile.",
+                x=0.5,
+                y=1.08,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=14),
+            )
+        ],
+    )
+    return fig
 
 def fig_xw_iv_mispricing(options: pd.DataFrame) -> go.Figure:
     if options.empty or "xw_iv_mispricing" not in options.columns:
@@ -1171,8 +1870,14 @@ def build_options_stats_tab() -> Any:
                     _section("Fair Price vs Market", "options-stats-load-fair-vs-market", dcc.Graph(id="options-stats-fair-vs-market", figure=_empty_fig("Fair Price vs Market", "Click Load to render this chart.")), "Market mid compared with Black-Scholes smile fair value."),
                     _section("Normalized Mispricing", "options-stats-load-normalized-mispricing", dcc.Graph(id="options-stats-normalized-mispricing", figure=_empty_fig("Normalized Mispricing", "Click Load to render this chart.")), "Market minus fair divided by fair."),
                     _section("Goyal-Saretto RV-IV Spread", "options-stats-load-rv-iv-spread", dcc.Graph(id="options-stats-rv-iv-spread", figure=_empty_fig("Goyal-Saretto RV-IV Spread", "Click Load to render this chart.")), "Realized volatility proxy minus implied volatility."),
+                    _section("Volatility Risk Premium", "options-stats-load-vrp", dcc.Graph(id="options-stats-vrp", figure=_empty_fig("Volatility Risk Premium", "Click Load to render this chart.")), "Fitted IV minus realized volatility. Positive means rich vol, negative means cheap vol."),
+                    _section("VRP Z-Score", "options-stats-load-vrp-zscore", dcc.Graph(id="options-stats-vrp-zscore", figure=_empty_fig("VRP Z-Score", "Click Load to render this chart.")), "Rolling z-score of volatility risk premium by contract."),
                     _section("Xu-Wang IV Mispricing", "options-stats-load-xw-iv-mispricing", dcc.Graph(id="options-stats-xw-iv-mispricing", figure=_empty_fig("Xu-Wang IV Mispricing", "Click Load to render this chart.")), "Cross-sectional residual IV mispricing proxy."),
-                    _section("Double-Sort Heatmap", "options-stats-load-cross-sectional-heatmap", dcc.Graph(id="options-stats-cross-sectional-heatmap", figure=_empty_fig("Double-Sort Heatmap", "Click Load to render this chart.")), "RV-IV decile by Xu-Wang mispricing decile."),
+                    _section("Smile Outliers by Day", "options-stats-load-daily-smiles", dcc.Graph(id="options-stats-daily-smiles", figure=_empty_fig("Smile Outliers by Day", "Click Load to render this chart.")), "Mid-day IV smile panels for each trading day with strike labels and fitted smile."),
+                    _section("Day 0 IV Smile", "options-stats-load-day0-smile", dcc.Graph(id="options-stats-day0-smile", figure=_empty_fig("Day 0 IV Smile", "Click Load to render this chart.")), "Large standalone mid-day IV smile for day 0."),
+                    _section("Day 1 IV Smile", "options-stats-load-day1-smile", dcc.Graph(id="options-stats-day1-smile", figure=_empty_fig("Day 1 IV Smile", "Click Load to render this chart.")), "Large standalone mid-day IV smile for day 1."),
+                    _section("Day 2 IV Smile", "options-stats-load-day2-smile", dcc.Graph(id="options-stats-day2-smile", figure=_empty_fig("Day 2 IV Smile", "Click Load to render this chart.")), "Large standalone mid-day IV smile for day 2."),
+                    _section("Mispricing Heatmap", "options-stats-load-mispricing-heatmap", dcc.Graph(id="options-stats-mispricing-heatmap", figure=_empty_fig("Mispricing Heatmap", "Click Load to render this chart.")), "Mean IV residual by day and strike. Blue means cheap, red means rich."),
                     _section("Volatility Trend Condition", "options-stats-load-vol-trend-condition", dcc.Graph(id="options-stats-vol-trend-condition", figure=_empty_fig("Volatility Trend Condition", "Click Load to render this chart.")), "Option return proxy conditioned on short-vs-long realized volatility trend."),
                     _section("Mispricing Z-Score", "options-stats-load-mispricing-z", dcc.Graph(id="options-stats-mispricing-z", figure=_empty_fig("Mispricing Z-Score", "Click Load to render this chart.")), "Rolling z-score of option mispricing."),
                     _section("Autocorrelation", "options-stats-load-autocorr", dcc.Graph(id="options-stats-autocorr", figure=_empty_fig("Autocorrelation", "Click Load to render this chart.")), "Lag-1 autocorrelation by product and series."),
@@ -1215,30 +1920,48 @@ def _build_summary_cards(options: pd.DataFrame, underlying: pd.DataFrame, trades
     cheap = int((latest.get("signal", pd.Series(dtype=str)) == "BUY_CHEAP_OPTION").sum()) if not latest.empty else 0
     avg_abs_mis = float(np.nanmean(np.abs(options["mispricing"]))) if "mispricing" in options else np.nan
     avg_gamma_theta = float(np.nanmean(options["gamma_theta_ratio"].replace([np.inf, -np.inf], np.nan))) if "gamma_theta_ratio" in options else np.nan
+    avg_vrp = float(np.nanmean(options["vrp"].replace([np.inf, -np.inf], np.nan))) if "vrp" in options else np.nan
     return [
         _summary_card("Options detected", options["product"].nunique(), "unique option products"),
         _summary_card("Cheap signals", cheap, "latest z-score <= entry band"),
         _summary_card("Rich signals", rich, "latest z-score >= entry band"),
         _summary_card("Avg abs mispricing", round(avg_abs_mis, 4), "market minus smile fair"),
         _summary_card("Avg gamma/theta", round(avg_gamma_theta, 6), "convexity per theta cost"),
+        _summary_card("Avg VRP", round(avg_vrp, 6), "fitted IV minus realized vol"),
         _summary_card("Underlying rows", len(underlying), "mean reversion sample"),
         _summary_card("Trade rows", len(trades), "if available"),
         _summary_card("Smile fit rows", int(options.get("smile_fit_ok", pd.Series(False)).sum()), "timestamps with parabola fit"),
     ]
 
 
-def _store_df(df: pd.DataFrame) -> list[dict]:
+OPTIONS_STATS_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def _store_df(df: pd.DataFrame) -> Any:
     if df is None or df.empty:
         return []
+    # Avoid shipping hundreds of thousands of option rows through the browser as JSON.
+    # Large DataFrames stay server-side and the dcc.Store only holds a small cache key.
+    if len(df) > 5000:
+        key = f"options_stats_df_{uuid.uuid4().hex}"
+        OPTIONS_STATS_CACHE[key] = df.copy()
+        # Keep the cache from growing forever during repeated reloads.
+        if len(OPTIONS_STATS_CACHE) > 12:
+            for old_key in list(OPTIONS_STATS_CACHE.keys())[:-12]:
+                OPTIONS_STATS_CACHE.pop(old_key, None)
+        return {"__options_stats_cache_key__": key, "rows": int(len(df)), "columns": list(map(str, df.columns))}
     return df.replace([np.inf, -np.inf], np.nan).where(pd.notna(df), None).to_dict("records")
 
 
 def _df_from_store(data: Any) -> pd.DataFrame:
+    if isinstance(data, dict) and "__options_stats_cache_key__" in data:
+        cached = OPTIONS_STATS_CACHE.get(data["__options_stats_cache_key__"])
+        return cached.copy() if cached is not None else pd.DataFrame()
     return pd.DataFrame(data or [])
 
 
 def _options_from_store(data: Any) -> pd.DataFrame:
-    return _df_from_store(data)
+    return _repair_options_for_plotting(_df_from_store(data))
 
 
 def _underlying_from_store(data: Any) -> pd.DataFrame:
@@ -1357,15 +2080,45 @@ def register_options_stats_callbacks(
         if not n: raise PreventUpdate
         return fig_rv_iv_spread(_options_from_store(options_data))
 
+    @app.callback(Output("options-stats-vrp", "figure"), Input("options-stats-load-vrp", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_vrp(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_vrp(_options_from_store(options_data))
+
+    @app.callback(Output("options-stats-vrp-zscore", "figure"), Input("options-stats-load-vrp-zscore", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_vrp_zscore(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_vrp_zscore(_options_from_store(options_data))
+
     @app.callback(Output("options-stats-xw-iv-mispricing", "figure"), Input("options-stats-load-xw-iv-mispricing", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
     def _load_xw_iv_mispricing(n, options_data):
         if not n: raise PreventUpdate
         return fig_xw_iv_mispricing(_options_from_store(options_data))
 
-    @app.callback(Output("options-stats-cross-sectional-heatmap", "figure"), Input("options-stats-load-cross-sectional-heatmap", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
-    def _load_cross_sectional_heatmap(n, options_data):
+    @app.callback(Output("options-stats-daily-smiles", "figure"), Input("options-stats-load-daily-smiles", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_daily_smiles(n, options_data):
         if not n: raise PreventUpdate
-        return fig_cross_sectional_heatmap(_options_from_store(options_data))
+        return fig_daily_smile_outliers(_options_from_store(options_data))
+
+    @app.callback(Output("options-stats-day0-smile", "figure"), Input("options-stats-load-day0-smile", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_day0_smile(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_single_day_iv_smile(_options_from_store(options_data), 0)
+
+    @app.callback(Output("options-stats-day1-smile", "figure"), Input("options-stats-load-day1-smile", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_day1_smile(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_single_day_iv_smile(_options_from_store(options_data), 1)
+
+    @app.callback(Output("options-stats-day2-smile", "figure"), Input("options-stats-load-day2-smile", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_day2_smile(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_single_day_iv_smile(_options_from_store(options_data), 2)
+
+    @app.callback(Output("options-stats-mispricing-heatmap", "figure"), Input("options-stats-load-mispricing-heatmap", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
+    def _load_mispricing_heatmap(n, options_data):
+        if not n: raise PreventUpdate
+        return fig_mispricing_heatmap(_options_from_store(options_data))
 
     @app.callback(Output("options-stats-vol-trend-condition", "figure"), Input("options-stats-load-vol-trend-condition", "n_clicks"), State("options-stats-options-store", "data"), prevent_initial_call=True)
     def _load_vol_trend_condition(n, options_data):
@@ -1470,6 +2223,13 @@ def render_options_stats_payload(
             "fair_vs_market": fig_fair_vs_market(options),
             "normalized_mispricing": fig_normalized_mispricing(options),
             "rv_iv_spread": fig_rv_iv_spread(options),
+            "vrp": fig_vrp(options),
+            "vrp_zscore": fig_vrp_zscore(options),
+            "daily_smile_outliers": fig_daily_smile_outliers(options),
+            "day0_iv_smile": fig_single_day_iv_smile(options, 0),
+            "day1_iv_smile": fig_single_day_iv_smile(options, 1),
+            "day2_iv_smile": fig_single_day_iv_smile(options, 2),
+            "mispricing_heatmap": fig_mispricing_heatmap(options),
             "xu_wang_iv_mispricing": fig_xw_iv_mispricing(options),
             "cross_sectional_heatmap": fig_cross_sectional_heatmap(options),
             "vol_trend_condition": fig_vol_trend_condition(options),
