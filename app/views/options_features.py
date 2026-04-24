@@ -79,7 +79,15 @@ OPTION_NAME_HINTS = (
     "VEV",
 )
 
-DEFAULT_DAYS_TO_EXPIRY = 7.0
+# --- Time-to-expiry conventions -------------------------------------------
+# Round 3 convention: data stamped at 0, 100, 200, ... 999_900 within each day.
+# Vouchers expire N days from the start of day 0. User specified 5 DTE at
+# the start of day 0 (so day 2 end = ~3 DTE).
+START_DAYS_TO_EXPIRY   = 5.0             # DTE at day 0 timestamp 0
+TRADING_YEAR           = 250.0           # trading days per year for annualization
+TICKS_PER_DAY          = 1_000_000       # Prosperity timestamp range per day
+DEFAULT_SAMPLE_INTERVAL = 100             # typical timestamp stride between rows
+
 DEFAULT_RISK_FREE_RATE = 0.0
 DEFAULT_ROLLING_WINDOW = 40
 DEFAULT_Z_WINDOW = 80
@@ -90,7 +98,13 @@ EPS = 1e-12
 class OptionsStatsConfig:
     underlying_aliases: tuple[str, ...] = UNDERLYING_ALIASES
     option_name_hints: tuple[str, ...] = OPTION_NAME_HINTS
-    default_days_to_expiry: float = DEFAULT_DAYS_TO_EXPIRY
+    # v2: time-to-expiry in trading-year units, starts at 5 DTE on day 0.
+    start_days_to_expiry: float = START_DAYS_TO_EXPIRY
+    trading_year:         float = TRADING_YEAR
+    ticks_per_day:        float = TICKS_PER_DAY
+    # legacy field preserved for any code that still reads it; no longer used
+    # in _estimate_time_to_expiry.
+    default_days_to_expiry: float = START_DAYS_TO_EXPIRY
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     rolling_window: int = DEFAULT_ROLLING_WINDOW
     z_window: int = DEFAULT_Z_WINDOW
@@ -550,29 +564,45 @@ def bs_call_greeks_vectorized(S: Any, K: Any, T: Any, r: float, sigma: Any) -> p
 
 
 def _estimate_time_to_expiry(df: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.Series:
-    # If a T/days_to_expiry column exists, use it. Otherwise linearly decay from default days.
-    for col in ["time_to_expiry", "tte", "T", "days_to_expiry", "expiry_days"]:
+    """Time to expiry in TRADING YEARS.
+
+    v2 fix (2025-04-24): previous implementation normalized progress across the
+    *loaded sample* regardless of the real schedule, and annualized with /365
+    (calendar days). Both were wrong. The Prosperity Round 3 convention is:
+      - Data is day 0, 1, 2, ... with timestamps 0 .. ticks_per_day within each day.
+      - Vouchers expire cfg.start_days_to_expiry days after day 0 timestamp 0.
+      - Annualization uses TRADING days (cfg.trading_year, default 250).
+
+    Override order:
+      1. Explicit `T` / `time_to_expiry` / `tte` column (already in years) — used as-is.
+      2. Explicit `days_to_expiry` / `expiry_days` column — divided by trading_year.
+      3. Compute from `day` + `timestamp` vs cfg.start_days_to_expiry.
+    """
+    for col in ["time_to_expiry", "tte", "T"]:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").clip(lower=1e-6)
+    for col in ["days_to_expiry", "expiry_days"]:
         if col in df.columns:
             raw = pd.to_numeric(df[col], errors="coerce")
-            if col in {"days_to_expiry", "expiry_days"}:
-                return (raw / 365.0).clip(lower=1e-6)
-            return raw.clip(lower=1e-6)
+            return (raw / cfg.trading_year).clip(lower=1e-6)
 
-    if "timestamp" not in df.columns or df["timestamp"].nunique() <= 1:
-        return pd.Series(cfg.default_days_to_expiry / 365.0, index=df.index)
+    if "timestamp" not in df.columns:
+        return pd.Series(cfg.start_days_to_expiry / cfg.trading_year, index=df.index)
 
-    # Round 3 has day 0/1/2 with timestamps restarted each day. Build a monotonic clock.
-    t = pd.to_numeric(df["timestamp"], errors="coerce").astype(float)
+    t = pd.to_numeric(df["timestamp"], errors="coerce").fillna(0.0).astype(float)
     if "day" in df.columns:
-        day = pd.to_numeric(df["day"], errors="coerce").fillna(0).astype(float)
-        span = max(float(t.max() - t.min()), 1.0)
-        clock = day * (span + 1.0) + t
+        day = pd.to_numeric(df["day"], errors="coerce").fillna(0.0).astype(float)
     else:
-        clock = t
+        day = pd.Series(0.0, index=df.index)
 
-    progress = (clock - clock.min()) / max(clock.max() - clock.min(), EPS)
-    days_left = cfg.default_days_to_expiry - progress * max(cfg.default_days_to_expiry - 1.0, 0.0)
-    return (days_left / 365.0).clip(lower=1e-6)
+    # Normalize day numbering so the earliest day in the upload is treated as day 0.
+    # Handles raw Prosperity days -1/0/1 uploads the same way display_day does.
+    if len(day):
+        day = day - day.min()
+
+    days_elapsed = day + t / float(cfg.ticks_per_day)
+    days_left    = (cfg.start_days_to_expiry - days_elapsed).clip(lower=1e-6)
+    return days_left / float(cfg.trading_year)
 
 
 # =============================================================================
@@ -795,10 +825,16 @@ def _add_gamma_scalping_ev(options: pd.DataFrame) -> pd.DataFrame:
 
 def _add_signals(options: pd.DataFrame, cfg: OptionsStatsConfig) -> pd.DataFrame:
     out = options.copy()
-    z = out["mispricing_z"] if "mispricing_z" in out.columns else out["mispricing_z"]
+    # v2 fix: the old version had a tautology (both branches of the ternary
+    # returned out["mispricing_z"]), which raised KeyError if the column was
+    # absent. Fall back to zeros when the z-score hasn't been computed.
+    if "mispricing_z" in out.columns:
+        z = pd.to_numeric(out["mispricing_z"], errors="coerce")
+    else:
+        z = pd.Series(0.0, index=out.index)
     out["signal"] = "HOLD"
     out.loc[z <= -cfg.signal_entry_z, "signal"] = "BUY_CHEAP_OPTION"
-    out.loc[z >= cfg.signal_entry_z, "signal"] = "SELL_RICH_OPTION"
+    out.loc[z >=  cfg.signal_entry_z, "signal"] = "SELL_RICH_OPTION"
     out.loc[z.abs() <= cfg.signal_exit_z, "signal"] = "EXIT/FLAT"
     return out
 
@@ -1175,8 +1211,19 @@ def _add_cross_sectional_mispricing_features(options: pd.DataFrame, underlying: 
         u["rv_short"] = u["underlying_log_return"].rolling(max(5, cfg.rolling_window // 2), min_periods=5).std()
         u["rv_long"] = u["underlying_log_return"].rolling(max(10, cfg.rolling_window * 2), min_periods=10).std()
         u["rv_trend"] = u["rv_short"] - u["rv_long"]
-        u["rv_short_ann_proxy"] = u["rv_short"] * np.sqrt(365.0)
-        u["rv_long_ann_proxy"] = u["rv_long"] * np.sqrt(365.0)
+
+        # v2 fix (2025-04-24): proper annualization in TRADING-YEAR units.
+        # Per-sample std → per-year std requires sqrt(samples_per_year), where
+        #   samples_per_year = trading_year × (ticks_per_day / sample_interval).
+        # The old code used sqrt(365), under-annualizing by ~83× for Round 3 data.
+        ts_diff = pd.to_numeric(u["timestamp"], errors="coerce").diff().dropna()
+        # Prefer the *within-day* typical stride — diff at a day boundary can be huge.
+        ts_diff = ts_diff[(ts_diff > 0) & (ts_diff < cfg.ticks_per_day / 2)]
+        sample_interval = float(ts_diff.median()) if len(ts_diff) else float(DEFAULT_SAMPLE_INTERVAL)
+        samples_per_year = cfg.trading_year * (cfg.ticks_per_day / max(sample_interval, 1.0))
+        ann_factor = float(np.sqrt(samples_per_year))
+        u["rv_short_ann_proxy"] = u["rv_short"] * ann_factor
+        u["rv_long_ann_proxy"]  = u["rv_long"]  * ann_factor
         time_keys = _time_key_cols(out)
         merge_cols = [*time_keys, "rv_short", "rv_long", "rv_trend", "rv_short_ann_proxy", "rv_long_ann_proxy"]
         out = out.merge(u[[c for c in merge_cols if c in u.columns]].drop_duplicates(subset=time_keys), on=time_keys, how="left")
