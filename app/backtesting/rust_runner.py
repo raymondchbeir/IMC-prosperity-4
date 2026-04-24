@@ -111,6 +111,12 @@ def _resolve_dataset_path(request: BacktestRequest, custom_data_root: Path | Non
     if custom_data_root is not None:
         return custom_data_root
 
+    dataset_alias = _dataset_alias_from_request(request)
+    resolved = _resolve_local_dataset_alias(dataset_alias)
+    return resolved if resolved is not None else dataset_alias
+
+
+def _dataset_alias_from_request(request: BacktestRequest) -> str:
     expr = (request.targets_text or "").strip()
     round_num = request.selected_round
     if request.preset == "selected_dashboard_round" and round_num is not None:
@@ -125,6 +131,70 @@ def _resolve_dataset_path(request: BacktestRequest, custom_data_root: Path | Non
         except Exception:
             pass
     return "latest"
+
+
+def _resolve_local_dataset_alias(dataset_alias: str) -> Path | None:
+    """Prefer concrete dataset directories so aliases like round3 work from the dashboard repo.
+
+    rust_backtester resolves short aliases relative to the process cwd. The dashboard runs it from the
+    IMC dashboard repo, while the bundled Rust datasets usually live in tools/prosperity_rust_backtester.
+    """
+    if not isinstance(dataset_alias, str):
+        return None
+
+    repo_root = Path(__file__).resolve().parents[2]
+    alias_map = {
+        "latest": None,
+        "tutorial": "tutorial",
+        "tut": "tutorial",
+        "tutorial-round": "tutorial",
+        "tut-round": "tutorial",
+        "round1": "round1",
+        "r1": "round1",
+        "round2": "round2",
+        "r2": "round2",
+        "round3": "round3",
+        "r3": "round3",
+        "round4": "round4",
+        "r4": "round4",
+        "round5": "round5",
+        "r5": "round5",
+        "round6": "round6",
+        "r6": "round6",
+        "round7": "round7",
+        "r7": "round7",
+        "round8": "round8",
+        "r8": "round8",
+    }
+    key = dataset_alias.lower()
+    folder = alias_map.get(key)
+    candidate_roots = [
+        Path(os.getenv("RUST_BACKTESTER_DATASETS", "")) if os.getenv("RUST_BACKTESTER_DATASETS") else None,
+        repo_root / "tools" / "prosperity_rust_backtester" / "datasets",
+        repo_root / "datasets",
+        repo_root / "data",
+    ]
+
+    if folder is None and key == "latest":
+        for root in candidate_roots:
+            if root is None or not root.exists():
+                continue
+            rounds = [p for p in root.iterdir() if p.is_dir() and (p / "").exists()]
+            populated = [p for p in rounds if any(p.glob("prices_*.csv")) or any(p.glob("*.log")) or any(p.glob("*.json"))]
+            if populated:
+                return sorted(populated, key=lambda p: p.name)[-1]
+        return None
+
+    if folder is None:
+        return None
+
+    for root in candidate_roots:
+        if root is None:
+            continue
+        candidate = root / folder
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _tokens_to_targets(request: BacktestRequest) -> list[BacktestTarget]:
