@@ -1,7 +1,14 @@
 from dash import Dash, dcc, html
 
+import app.backtesting.runner as legacy_runner
+from app.backtesting.rust_runner import run_rust_backtests
+from app.views import backtester as backtester_view
 from app.views.portal_logs import build_portal_logs_layout, register_portal_logs_callbacks
 from app.views.upload import get_upload_layout, register_upload_callbacks
+
+# Keep the existing dashboard/backtester UI intact, but route runs through the Rust CLI adapter.
+legacy_runner.run_backtests = run_rust_backtests
+backtester_view.run_backtests = run_rust_backtests
 
 
 app = Dash(__name__, suppress_callback_exceptions=True)
@@ -42,7 +49,7 @@ app.layout = html.Div(
     [
         html.H1("IMC Prosperity Dashboard"),
         html.P(
-            "Upload IMC CSV files to explore the market, compare products, run round-specific analysis, backtest your trader files, and analyze IMC portal logs."
+            "Upload IMC CSV files to explore the market, compare products, run round-specific analysis, backtest your trader files with the Rust backtester, and analyze IMC portal logs."
         ),
         base_upload_layout,
     ],
