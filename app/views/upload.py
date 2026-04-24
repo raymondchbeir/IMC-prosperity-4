@@ -11,6 +11,10 @@ from dash.exceptions import PreventUpdate
 from app.ingestion.session_builder import build_session
 from app.rounds.registry import get_round_plugin
 from app.views.backtester import build_backtester_layout, register_backtester_callbacks
+from app.views.options_features import (
+    build_options_stats_tab,
+    register_options_stats_callbacks,
+)
 from app.views.market_microstructure import (
     build_market_microstructure_layout,
     register_market_microstructure_callbacks,
@@ -138,6 +142,16 @@ def get_upload_layout():
                             html.Div(
                                 build_backtester_layout(),
                                 id="backtester-container",
+                            )
+                        ],
+                    ),
+                    dcc.Tab(
+                        label="Options Stats",
+                        value="options-stats",
+                        children=[
+                            html.Div(
+                                build_options_stats_tab(),
+                                id="options-stats-container",
                             )
                         ],
                     ),
@@ -726,6 +740,7 @@ def register_upload_callbacks(app):
     register_backtester_callbacks(app)
     register_research_callbacks(app)
     register_market_microstructure_callbacks(app)
+    register_options_stats_callbacks(app)
 
 
 def filter_selected_data(
