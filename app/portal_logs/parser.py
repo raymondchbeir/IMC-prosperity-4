@@ -72,16 +72,33 @@ def parse_portal_files(paths: list[str | Path]) -> PortalLogPayload:
             "status": merged.get("status"),
             "profit": merged.get("profit"),
         },
-        activity_rows=activity_df.to_dict("records"),
-        submission_trade_rows=submission_df.to_dict("records"),
-        realized_trade_rows=realized_df.to_dict("records"),
-        bot_trade_rows=bot_df.to_dict("records"),
-        sandbox_rows=sandbox_df.to_dict("records"),
-        per_product_rows=per_product_df.to_dict("records"),
-        bot_distribution_rows=bot_dist_df.to_dict("records"),
-        bot_normalized_distribution_rows=bot_norm_df.to_dict("records"),
-        summary=summary,
+        activity_rows=_clean_records(activity_df),
+        submission_trade_rows=_clean_records(submission_df),
+        realized_trade_rows=_clean_records(realized_df),
+        bot_trade_rows=_clean_records(bot_df),
+        sandbox_rows=_clean_records(sandbox_df),
+        per_product_rows=_clean_records(per_product_df),
+        bot_distribution_rows=_clean_records(bot_dist_df),
+        bot_normalized_distribution_rows=_clean_records(bot_norm_df),
+        summary=_clean_dict(summary),
     )
+
+
+def _clean_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+    safe = df.replace({np.nan: None, pd.NaT: None})
+    return safe.to_dict("records")
+
+
+def _clean_dict(data: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, float) and np.isnan(value):
+            out[key] = None
+        else:
+            out[key] = value
+    return out
 
 
 def _parse_activities_log(raw: str | None) -> pd.DataFrame:
@@ -96,7 +113,9 @@ def _parse_activities_log(raw: str | None) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     if "round" not in df.columns:
         df["round"] = np.nan
-    if "run_day" not in df.columns and "day" in df.columns:
+    if "day" not in df.columns:
+        df["day"] = 0
+    if "run_day" not in df.columns:
         df["run_day"] = df["day"]
     if "run_label" not in df.columns:
         df["run_label"] = df.apply(lambda r: f"D{int(r['day'])}" if pd.notna(r.get("day")) else "Portal", axis=1)
@@ -163,13 +182,22 @@ def _parse_sandbox_logs(raw: Any) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if not df.empty:
         df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
+        df["round"] = np.nan
+        df["day"] = 0
+        df["run_label"] = "Portal"
     return df
 
 
 def _snapshot_lookup(activity_df: pd.DataFrame) -> pd.DataFrame:
     if activity_df.empty:
         return pd.DataFrame()
-    cols = [c for c in ["timestamp", "product", "bid_price_1", "ask_price_1", "mid_price", "spread", "profit_loss"] if c in activity_df.columns]
+    cols = [
+        c for c in [
+            "timestamp", "product", "round", "day", "run_day", "run_label", "run_index", "global_step",
+            "bid_price_1", "ask_price_1", "mid_price", "spread", "profit_loss",
+        ]
+        if c in activity_df.columns
+    ]
     return activity_df[cols].drop_duplicates(subset=["timestamp", "product"]).copy()
 
 
@@ -180,9 +208,38 @@ def _enrich_trades_with_book(trades_df: pd.DataFrame, activity_df: pd.DataFrame)
     snap = _snapshot_lookup(activity_df)
     if not snap.empty:
         out = out.merge(snap, on=["timestamp", "product"], how="left")
+
+    ts_step_map = {}
+    if not activity_df.empty and {"timestamp", "global_step"}.issubset(activity_df.columns):
+        ts_step_map = dict(activity_df[["timestamp", "global_step"]].drop_duplicates().itertuples(index=False, name=None))
+
+    default_day = _first_value(activity_df, "day", 0)
+    default_run_day = _first_value(activity_df, "run_day", default_day)
+    default_round = _first_value(activity_df, "round", np.nan)
+    default_run_label = _first_value(activity_df, "run_label", "Portal")
+
     for col in ["bid_price_1", "ask_price_1", "mid_price", "spread"]:
         if col not in out.columns:
             out[col] = np.nan
+    if "day" not in out.columns:
+        out["day"] = default_day
+    out["day"] = out["day"].fillna(default_day)
+    if "run_day" not in out.columns:
+        out["run_day"] = default_run_day
+    out["run_day"] = out["run_day"].fillna(default_run_day)
+    if "round" not in out.columns:
+        out["round"] = default_round
+    if "run_label" not in out.columns:
+        out["run_label"] = default_run_label
+    out["run_label"] = out["run_label"].fillna(default_run_label)
+    if "run_index" not in out.columns:
+        out["run_index"] = 0
+    if "global_step" not in out.columns:
+        out["global_step"] = out["timestamp"].map(ts_step_map) if ts_step_map else np.nan
+    if out["global_step"].isna().any():
+        fallback_map = {t: i for i, t in enumerate(sorted(out["timestamp"].dropna().unique().tolist()))}
+        out["global_step"] = out["global_step"].fillna(out["timestamp"].map(fallback_map))
+
     out["price_minus_mid"] = out["price"] - out["mid_price"]
     out["price_minus_mid_bps"] = np.where(out["mid_price"] > 0, 10000 * out["price_minus_mid"] / out["mid_price"], np.nan)
     out["spread_units_from_mid"] = np.where(out["spread"].abs() > 0, out["price_minus_mid"] / out["spread"], np.nan)
@@ -192,6 +249,12 @@ def _enrich_trades_with_book(trades_df: pd.DataFrame, activity_df: pd.DataFrame)
     out.loc[pd.notna(out["ask_price_1"]) & (out["price"] >= out["ask_price_1"]), "inferred_side"] = "Lifted Ask"
     out.loc[pd.notna(out["bid_price_1"]) & (out["price"] <= out["bid_price_1"]), "inferred_side"] = "Hit Bid"
     return out
+
+
+def _first_value(df: pd.DataFrame, col: str, default: Any) -> Any:
+    if df.empty or col not in df.columns or df[col].dropna().empty:
+        return default
+    return df[col].dropna().iloc[0]
 
 
 def _build_submission_trades(trade_df: pd.DataFrame, activity_df: pd.DataFrame) -> pd.DataFrame:
@@ -205,10 +268,9 @@ def _build_submission_trades(trade_df: pd.DataFrame, activity_df: pd.DataFrame) 
     out["signed_quantity"] = np.where(out["side"] == "Buy", out["quantity"], -out["quantity"]).astype(int)
     out["cash_flow"] = -out["price"] * out["signed_quantity"]
     out["fill_id"] = range(len(out))
-    out["day"] = out.get("day", 0)
-    out["position_after_trade"] = out.groupby("product")["signed_quantity"].cumsum()
+    out["position_after_trade"] = out.groupby(["product"], sort=False)["signed_quantity"].cumsum()
     out["gross_notional"] = out["price"] * out["quantity"]
-    return out.reset_index(drop=True)
+    return out.sort_values(["timestamp", "product", "fill_id"]).reset_index(drop=True)
 
 
 def _build_bot_trades(trade_df: pd.DataFrame, activity_df: pd.DataFrame) -> pd.DataFrame:
@@ -220,7 +282,7 @@ def _build_bot_trades(trade_df: pd.DataFrame, activity_df: pd.DataFrame) -> pd.D
         return out
     out["gross_notional"] = out["price"] * out["quantity"]
     out["bot_trade_id"] = range(len(out))
-    return out.reset_index(drop=True)
+    return out.sort_values(["timestamp", "product", "bot_trade_id"]).reset_index(drop=True)
 
 
 def _realized_trades_to_df(submission_df: pd.DataFrame) -> pd.DataFrame:
@@ -268,16 +330,34 @@ def _realized_row(trade_id: int, product: str, entry: dict[str, Any], exit_: dic
     pnl = (exit_price - entry_price) * qty if direction == "Long" else (entry_price - exit_price) * qty
     return {
         "trade_id": f"PRT-{trade_id}",
+        "round": entry.get("round"),
+        "day": entry.get("day"),
+        "run_label": entry.get("run_label", "Portal"),
         "product": product,
         "direction": direction,
+        "entry_side": entry.get("side"),
+        "exit_side": exit_.get("side"),
         "quantity": int(qty),
         "entry_timestamp": entry.get("timestamp"),
         "exit_timestamp": exit_.get("timestamp"),
+        "hold_ticks": (exit_.get("timestamp") or 0) - (entry.get("timestamp") or 0),
+        "entry_global_step": entry.get("global_step"),
+        "exit_global_step": exit_.get("global_step"),
         "entry_price": entry_price,
         "exit_price": exit_price,
         "pnl": pnl,
         "return_pct": 100 * pnl / abs(entry_price * qty) if entry_price and qty else np.nan,
         "outcome": "Win" if pnl > 0 else "Loss" if pnl < 0 else "Flat",
+        "entry_bid_price_1": entry.get("bid_price_1"),
+        "entry_ask_price_1": entry.get("ask_price_1"),
+        "entry_mid_price": entry.get("mid_price"),
+        "entry_spread": entry.get("spread"),
+        "exit_bid_price_1": exit_.get("bid_price_1"),
+        "exit_ask_price_1": exit_.get("ask_price_1"),
+        "exit_mid_price": exit_.get("mid_price"),
+        "exit_spread": exit_.get("spread"),
+        "entry_fill_id": entry.get("fill_id"),
+        "exit_fill_id": exit_.get("fill_id"),
     }
 
 
@@ -295,6 +375,7 @@ def _build_per_product(activity_df: pd.DataFrame, sub_df: pd.DataFrame, bot_df: 
         s = sub_df[sub_df["product"] == product] if not sub_df.empty else pd.DataFrame()
         b = bot_df[bot_df["product"] == product] if not bot_df.empty else pd.DataFrame()
         r = realized_df[realized_df["product"] == product] if not realized_df.empty else pd.DataFrame()
+        wins = r[pd.to_numeric(r.get("pnl", pd.Series(dtype=float)), errors="coerce") > 0] if not r.empty else pd.DataFrame()
         rows.append({
             "product": product,
             "total_final_pnl": final_pnl,
@@ -305,6 +386,8 @@ def _build_per_product(activity_df: pd.DataFrame, sub_df: pd.DataFrame, bot_df: 
             "realized_trade_count": int(len(r)),
             "winning_trade_count": int((r["pnl"] > 0).sum()) if not r.empty else 0,
             "losing_trade_count": int((r["pnl"] < 0).sum()) if not r.empty else 0,
+            "average_win_per_trade": float(wins["pnl"].mean()) if not wins.empty else np.nan,
+            "average_win_pct": float(wins["return_pct"].mean()) if not wins.empty and "return_pct" in wins.columns else np.nan,
         })
     return pd.DataFrame(rows)
 
@@ -335,8 +418,11 @@ def _build_summary(raw: dict[str, Any], activity_df: pd.DataFrame, sub_df: pd.Da
         pnl = float(last.sum()) if len(last) else 0.0
     wins = int((realized_df["pnl"] > 0).sum()) if not realized_df.empty else 0
     losses = int((realized_df["pnl"] < 0).sum()) if not realized_df.empty else 0
+    winning_rows = realized_df[realized_df["pnl"] > 0] if not realized_df.empty else pd.DataFrame()
     return {
         "total_pnl": pnl,
+        "num_runs": 1,
+        "targets": ["Portal"],
         "portal_status": raw.get("status"),
         "submission_id": raw.get("submissionId"),
         "submission_trade_count": int(len(sub_df)),
@@ -346,5 +432,7 @@ def _build_summary(raw: dict[str, Any], activity_df: pd.DataFrame, sub_df: pd.Da
         "winning_trade_count": wins,
         "losing_trade_count": losses,
         "win_rate": wins / (wins + losses) if wins + losses else None,
+        "average_win_per_trade": float(winning_rows["pnl"].mean()) if not winning_rows.empty else None,
+        "average_win_pct": float(winning_rows["return_pct"].mean()) if not winning_rows.empty and "return_pct" in winning_rows.columns else None,
         "products_traded": sorted(set(sub_df.get("product", pd.Series(dtype=str)).dropna().astype(str).tolist())),
     }
