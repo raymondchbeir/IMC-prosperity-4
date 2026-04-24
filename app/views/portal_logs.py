@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, State, dcc, html
+from plotly.subplots import make_subplots
 
 from app.portal_logs.parser import parse_portal_files
 from app.views.backtester import (
@@ -97,7 +98,7 @@ def build_portal_logs_layout():
             ),
             html.H3("Bot / Market Trade Distribution Heatmaps"),
             html.P(
-                "Bot trades are inferred as portal tradeHistory entries where neither buyer nor seller is SUBMISSION. Heatmap intensity is total quantity traded, so bright cells show where bots traded the most."
+                "Bot trades are inferred as portal tradeHistory entries where neither buyer nor seller is SUBMISSION. Each symbol gets its own heatmap panel. Color is total quantity traded, so bright cells show where bots traded the most."
             ),
             dcc.Graph(id="portal-log-bot-scatter-graph", figure=_empty_figure("Upload portal logs to begin.")),
             dcc.Graph(id="portal-log-bot-price-distribution-graph", figure=_empty_figure("Upload portal logs to begin.")),
@@ -105,7 +106,7 @@ def build_portal_logs_layout():
             html.H4("Bot trade distribution by price"),
             html.Div(id="portal-log-bot-distribution-container", style={"marginBottom": "20px"}),
             html.H3("Normalized Bot Distribution Heatmaps"),
-            html.P("Normalized heatmaps show how far away bot trades happen from mid price. Use bps-from-mid for product-normalized distance and spread-units to see whether bots hit near bid/ask or deeper."),
+            html.P("For each symbol: x-axis is time, y-axis is distance from mid price in price units/ticks, and color is total quantity. Example: all bot trades at mid go into row 0; trades one tick above mid go into row +1."),
             dcc.Graph(id="portal-log-bot-normalized-graph", figure=_empty_figure("Upload portal logs to begin.")),
             dcc.Graph(id="portal-log-bot-spread-units-graph", figure=_empty_figure("Upload portal logs to begin.")),
             html.Div(id="portal-log-bot-normalized-container", style={"marginBottom": "20px"}),
@@ -322,19 +323,70 @@ def _price_level_series(series: pd.Series, max_levels: int = 140) -> pd.Series:
         return price.astype(str)
 
 
-def _heatmap_from_pivot(pivot: pd.DataFrame, title: str, x_title: str, y_title: str, color_title: str = "Qty") -> go.Figure:
-    fig = go.Figure()
-    if not pivot.empty:
-        fig.add_trace(go.Heatmap(
-            x=pivot.columns.astype(str),
-            y=pivot.index.astype(str),
-            z=pivot.values,
-            colorbar={"title": color_title},
-            hovertemplate=f"{x_title}=%{{x}}<br>{y_title}=%{{y}}<br>{color_title}=%{{z}}<extra></extra>",
-        ))
-    fig.update_layout(title=title, template="plotly_white", height=560, hovermode="closest")
-    fig.update_xaxes(title_text=x_title)
-    fig.update_yaxes(title_text=y_title, autorange="reversed")
+def _normalized_level_series(series: pd.Series, step: float = 1.0) -> pd.Series:
+    values = pd.to_numeric(series, errors="coerce")
+    bucketed = (values / step).round() * step
+
+    def fmt(v):
+        if pd.isna(v):
+            return "unknown"
+        if abs(v) < 1e-9:
+            return "0 at mid"
+        if float(v).is_integer():
+            value = str(int(v))
+        else:
+            value = f"{v:.2f}".rstrip("0").rstrip(".")
+        return f"+{value} above mid" if v > 0 else f"{value} below mid"
+
+    return bucketed.map(fmt)
+
+
+def _faceted_heatmap(
+    df: pd.DataFrame,
+    y_col: str,
+    title: str,
+    x_title: str,
+    y_title: str,
+    color_title: str = "Total Qty",
+) -> go.Figure:
+    products = sorted(df["product"].dropna().astype(str).unique().tolist()) if "product" in df.columns else []
+    if not products:
+        return _empty_figure(title)
+
+    fig = make_subplots(
+        rows=len(products),
+        cols=1,
+        shared_xaxes=False,
+        vertical_spacing=min(0.08, 0.3 / max(len(products), 1)),
+        subplot_titles=products,
+    )
+
+    for row_idx, product in enumerate(products, start=1):
+        part = df[df["product"].astype(str) == product].copy()
+        pivot = part.pivot_table(index=y_col, columns="time_bucket", values="quantity", aggfunc="sum", fill_value=0)
+        pivot = pivot.sort_index()
+        fig.add_trace(
+            go.Heatmap(
+                x=pivot.columns.astype(str),
+                y=pivot.index.astype(str),
+                z=pivot.values,
+                coloraxis="coloraxis",
+                hovertemplate=f"Time=%{{x}}<br>{y_title}=%{{y}}<br>{color_title}=%{{z}}<extra>{product}</extra>",
+            ),
+            row=row_idx,
+            col=1,
+        )
+        fig.update_yaxes(title_text=y_title, autorange="reversed", row=row_idx, col=1)
+        fig.update_xaxes(title_text=x_title, row=row_idx, col=1)
+
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        height=max(460, 310 * len(products)),
+        coloraxis={"colorbar": {"title": color_title}},
+        showlegend=False,
+        hovermode="closest",
+    )
     return fig
 
 
@@ -343,14 +395,14 @@ def _make_bot_price_level_heatmap(bot_df: pd.DataFrame) -> go.Figure:
         return _empty_figure("No bot trades available for price-level heatmap.")
     df = bot_df.copy()
     df["time_bucket"] = _time_bucket_series(df["timestamp"], max_bins=80)
-    df["price_bucket"] = df["product"].astype(str) + " @ " + _price_level_series(df["price"], max_levels=120)
-    pivot = df.pivot_table(index="price_bucket", columns="time_bucket", values="quantity", aggfunc="sum", fill_value=0)
-    return _heatmap_from_pivot(
-        pivot,
-        "Where Bots Traded Most: Price Level × Time",
-        "Timestamp bucket",
-        "Product @ price level",
-        "Total Qty",
+    df["price_bucket"] = _price_level_series(df["price"], max_levels=120)
+    return _faceted_heatmap(
+        df,
+        y_col="price_bucket",
+        title="Where Bots Traded Most: Price Level × Time by Symbol",
+        x_title="Timestamp bucket",
+        y_title="Price level",
+        color_title="Total Qty",
     )
 
 
@@ -365,21 +417,20 @@ def _make_bot_size_histogram(bot_df: pd.DataFrame) -> go.Figure:
 
 
 def _make_bot_normalized_heatmap(bot_df: pd.DataFrame) -> go.Figure:
-    if bot_df.empty or not {"timestamp", "quantity", "product", "price_minus_mid_bps"}.issubset(bot_df.columns):
+    if bot_df.empty or not {"timestamp", "quantity", "product", "price_minus_mid"}.issubset(bot_df.columns):
         return _empty_figure("No normalized bot trades available.")
-    df = bot_df.dropna(subset=["price_minus_mid_bps"]).copy()
+    df = bot_df.dropna(subset=["price_minus_mid"]).copy()
     if df.empty:
         return _empty_figure("No normalized bot trades available.")
     df["time_bucket"] = _time_bucket_series(df["timestamp"], max_bins=80)
-    bins = [-1000, -250, -100, -50, -25, -10, -5, 0, 5, 10, 25, 50, 100, 250, 1000]
-    df["bps_bucket"] = df["product"].astype(str) + " | " + pd.cut(df["price_minus_mid_bps"], bins=bins, include_lowest=True, duplicates="drop").astype(str)
-    pivot = df.pivot_table(index="bps_bucket", columns="time_bucket", values="quantity", aggfunc="sum", fill_value=0)
-    return _heatmap_from_pivot(
-        pivot,
-        "Normalized Bot Distance: Bps From Mid × Time",
-        "Timestamp bucket",
-        "Product | bps from mid",
-        "Total Qty",
+    df["normalized_level"] = _normalized_level_series(df["price_minus_mid"], step=1.0)
+    return _faceted_heatmap(
+        df,
+        y_col="normalized_level",
+        title="Normalized Bot Distance: Price-Minus-Mid Level × Time by Symbol",
+        x_title="Timestamp bucket",
+        y_title="Distance from mid",
+        color_title="Total Qty",
     )
 
 
@@ -390,18 +441,50 @@ def _make_bot_spread_level_heatmap(bot_df: pd.DataFrame) -> go.Figure:
     df = bot_df.dropna(subset=["spread", "spread_units_from_mid"]).copy()
     if df.empty:
         return _empty_figure("No spread-level bot trades available.")
+
     spread_num = pd.to_numeric(df["spread"], errors="coerce")
     if spread_num.dropna().nunique() <= 30:
         df["spread_bucket"] = spread_num.astype("Int64").astype(str)
     else:
         df["spread_bucket"] = pd.cut(spread_num, bins=30, duplicates="drop").astype(str)
+
     bins = [-5, -2, -1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1, 2, 5]
-    df["level_bucket"] = df["product"].astype(str) + " | " + pd.cut(df["spread_units_from_mid"], bins=bins, include_lowest=True, duplicates="drop").astype(str)
-    pivot = df.pivot_table(index="level_bucket", columns="spread_bucket", values="quantity", aggfunc="sum", fill_value=0)
-    return _heatmap_from_pivot(
-        pivot,
-        "Where Bots Trade by Spread: Execution Level × Spread",
-        "Quoted spread at trade",
-        "Product | (trade price - mid) / spread",
-        "Total Qty",
+    df["execution_level"] = pd.cut(df["spread_units_from_mid"], bins=bins, include_lowest=True, duplicates="drop").astype(str)
+
+    products = sorted(df["product"].dropna().astype(str).unique().tolist())
+    if not products:
+        return _empty_figure("No spread-level bot trades available.")
+
+    fig = make_subplots(
+        rows=len(products),
+        cols=1,
+        shared_xaxes=False,
+        vertical_spacing=min(0.08, 0.3 / max(len(products), 1)),
+        subplot_titles=products,
     )
+    for row_idx, product in enumerate(products, start=1):
+        part = df[df["product"].astype(str) == product]
+        pivot = part.pivot_table(index="execution_level", columns="spread_bucket", values="quantity", aggfunc="sum", fill_value=0)
+        fig.add_trace(
+            go.Heatmap(
+                x=pivot.columns.astype(str),
+                y=pivot.index.astype(str),
+                z=pivot.values,
+                coloraxis="coloraxis",
+                hovertemplate="Spread=%{x}<br>Execution level=%{y}<br>Total Qty=%{z}<extra>" + product + "</extra>",
+            ),
+            row=row_idx,
+            col=1,
+        )
+        fig.update_yaxes(title_text="(price-mid)/spread", autorange="reversed", row=row_idx, col=1)
+        fig.update_xaxes(title_text="Quoted spread at trade", row=row_idx, col=1)
+
+    fig.update_layout(
+        title="Where Bots Trade by Spread: Execution Level × Spread by Symbol",
+        template="plotly_white",
+        height=max(460, 310 * len(products)),
+        coloraxis={"colorbar": {"title": "Total Qty"}},
+        showlegend=False,
+        hovermode="closest",
+    )
+    return fig
