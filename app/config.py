@@ -1,6 +1,11 @@
+from __future__ import annotations
+
+import os
+
 APP_TITLE = "IMC Prosperity Dashboard"
 
-BACKTESTER_INSTALL_HINT = "pip install -U prosperity4btest"
+BACKTESTER_INSTALL_HINT = "cargo install rust_backtester --locked"
+RUST_BACKTESTER_BIN = os.getenv("RUST_BACKTESTER_BIN", "rust_backtester")
 DEFAULT_MATCH_TRADES = "all"
 ROUND_0_LIMITS = {"EMERALDS": 80, "TOMATOES": 80}
 BACKTEST_DAY_SCAN_RANGE = list(range(-10, 11))
