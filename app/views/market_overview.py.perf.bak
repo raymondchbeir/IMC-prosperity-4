@@ -1,0 +1,655 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from dash import dcc, html
+from plotly.subplots import make_subplots
+
+
+def build_shared_market_controls_layout():
+    return html.Div(
+        [
+            html.H3("Market Controls"),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Label("Product"),
+                            dcc.Dropdown(
+                                id="product-dropdown",
+                                options=[],
+                                value=None,
+                                placeholder="Select product",
+                                clearable=False,
+                            ),
+                        ],
+                        style={"flex": "2"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Round"),
+                            dcc.Dropdown(
+                                id="round-dropdown",
+                                options=[],
+                                value=None,
+                                placeholder="Select round",
+                                clearable=False,
+                            ),
+                        ],
+                        style={"flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Day"),
+                            dcc.Dropdown(
+                                id="day-dropdown",
+                                options=[],
+                                value=None,
+                                placeholder="Select day",
+                                clearable=False,
+                            ),
+                        ],
+                        style={"flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Compare Mode"),
+                            dcc.Checklist(
+                                id="compare-days-toggle",
+                                options=[
+                                    {
+                                        "label": " Compare all available days",
+                                        "value": "compare_days",
+                                    }
+                                ],
+                                value=[],
+                                style={"marginTop": "8px"},
+                            ),
+                        ],
+                        style={"flex": "2"},
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "gap": "16px",
+                    "marginBottom": "16px",
+                    "alignItems": "end",
+                    "flexWrap": "wrap",
+                },
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Label("Cross-Product Compare"),
+                            dcc.Dropdown(
+                                id="compare-product-dropdown",
+                                options=[],
+                                value=[],
+                                multi=True,
+                                placeholder="Optional: compare against other products",
+                            ),
+                        ],
+                        style={"flex": "2"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Time Range"),
+                            dcc.RangeSlider(
+                                id="timestamp-range-slider",
+                                min=0,
+                                max=1,
+                                step=1,
+                                value=[0, 1],
+                                tooltip={"placement": "bottom"},
+                            ),
+                        ],
+                        style={"flex": "3", "padding": "0 12px"},
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "gap": "16px",
+                    "marginBottom": "20px",
+                    "alignItems": "end",
+                    "flexWrap": "wrap",
+                },
+            ),
+            html.Div(
+                [
+                    html.Button(
+                        "Download Current Product Prices CSV",
+                        id="download-prices-btn",
+                        n_clicks=0,
+                        style={"marginRight": "10px"},
+                    ),
+                    html.Button(
+                        "Download Current Product Trades CSV",
+                        id="download-trades-btn",
+                        n_clicks=0,
+                        style={"marginRight": "10px"},
+                    ),
+                    html.Button(
+                        "Download Current Product ZIP",
+                        id="download-product-data-btn",
+                        n_clicks=0,
+                        style={
+                            "fontWeight": "bold",
+                            "backgroundColor": "#eef6ff",
+                            "border": "1px solid #99c2ff",
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                        },
+                    ),
+                    dcc.Download(id="download-prices"),
+                    dcc.Download(id="download-trades"),
+                    dcc.Download(id="download-product-data"),
+                ],
+                style={"marginBottom": "20px"},
+            ),
+        ]
+    )
+
+
+def build_market_overview_graphs_layout():
+    return html.Div(
+        [
+            dcc.Graph(id="price-book-graph"),
+            dcc.Graph(id="spread-graph"),
+            dcc.Graph(id="depth-graph"),
+            dcc.Graph(id="trade-volume-graph"),
+            dcc.Graph(id="imbalance-graph"),
+            dcc.Graph(id="imbalance-histogram-graph"),
+            dcc.Graph(id="imbalance-forward-return-graph"),
+            dcc.Graph(id="returns-volatility-graph"),
+            dcc.Graph(id="book-heatmap-graph"),
+            dcc.Graph(id="trade-size-histogram-graph"),
+            dcc.Graph(id="cross-product-graph"),
+            html.Div(
+                [
+                    html.H3("Random Walk Diagnostics"),
+                    html.P(
+                        "Statistical checks on the filtered mid-price series. Treat this as evidence, not a hard yes/no oracle."
+                    ),
+                    html.Div(id="random-walk-summary-cards", style={"marginBottom": "16px"}),
+                    dcc.Graph(id="random-walk-diagnostics-graph"),
+                ],
+                style={"marginTop": "16px"},
+            ),
+        ]
+    )
+
+
+def _apply_common_layout(fig: go.Figure, title: str, height: int = 350) -> go.Figure:
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        height=height,
+        hovermode="x unified",
+        legend={"orientation": "h"},
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    return fig
+
+
+def infer_trade_side(prices_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
+    if prices_df.empty or trades_df.empty:
+        out = trades_df.copy()
+        if not out.empty and "side" not in out.columns:
+            out["side"] = "Unknown"
+        return out
+
+    book_cols = [c for c in ["timestamp", "bid_price_1", "ask_price_1"] if c in prices_df.columns]
+    if "timestamp" not in book_cols:
+        out = trades_df.copy()
+        out["side"] = "Unknown"
+        return out
+
+    book = prices_df[book_cols].dropna(subset=["timestamp"]).sort_values("timestamp").copy()
+    trades = trades_df.sort_values("timestamp").copy()
+
+    merged = pd.merge_asof(
+        trades,
+        book,
+        on="timestamp",
+        direction="backward",
+    )
+
+    def classify(row):
+        price = row.get("price")
+        bid = row.get("bid_price_1")
+        ask = row.get("ask_price_1")
+        if pd.isna(price) or (pd.isna(bid) and pd.isna(ask)):
+            return "Unknown"
+        if pd.notna(ask) and price >= ask:
+            return "Buy"
+        if pd.notna(bid) and price <= bid:
+            return "Sell"
+        return "Unknown"
+
+    merged["side"] = merged.apply(classify, axis=1)
+    return merged
+
+
+
+def enrich_market_data(
+    prices_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    window: int = 25,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    prices = prices_df.copy()
+    trades = trades_df.copy()
+
+    if not prices.empty:
+        sort_cols = [c for c in ["day", "timestamp"] if c in prices.columns]
+        if sort_cols:
+            prices = prices.sort_values(sort_cols).copy()
+
+        numeric_cols = [
+            "timestamp",
+            "mid_price",
+            "bid_price_1", "bid_volume_1",
+            "bid_price_2", "bid_volume_2",
+            "bid_price_3", "bid_volume_3",
+            "ask_price_1", "ask_volume_1",
+            "ask_price_2", "ask_volume_2",
+            "ask_price_3", "ask_volume_3",
+        ]
+        for col in numeric_cols:
+            if col in prices.columns:
+                prices[col] = pd.to_numeric(prices[col], errors="coerce")
+
+        if {"ask_price_1", "bid_price_1"}.issubset(prices.columns):
+            valid_book = (prices["bid_price_1"] > 0) & (prices["ask_price_1"] > 0)
+
+            if "mid_price" in prices.columns:
+                bad_mid = prices["mid_price"].isna() | (prices["mid_price"] <= 0)
+                prices.loc[valid_book & bad_mid, "mid_price"] = (
+                    prices.loc[valid_book & bad_mid, "bid_price_1"]
+                    + prices.loc[valid_book & bad_mid, "ask_price_1"]
+                ) / 2.0
+
+            bad_book = ~valid_book
+            for col in ["bid_price_1", "ask_price_1", "mid_price"]:
+                if col in prices.columns:
+                    prices.loc[bad_book, col] = np.nan
+
+            prices["spread"] = np.nan
+            prices.loc[valid_book, "spread"] = (
+                prices.loc[valid_book, "ask_price_1"] - prices.loc[valid_book, "bid_price_1"]
+            )
+        else:
+            prices["spread"] = pd.NA
+
+        if "mid_price" in prices.columns:
+            prices.loc[prices["mid_price"] <= 0, "mid_price"] = np.nan
+
+        bid_cols = [c for c in ["bid_volume_1", "bid_volume_2", "bid_volume_3"] if c in prices.columns]
+        ask_cols = [c for c in ["ask_volume_1", "ask_volume_2", "ask_volume_3"] if c in prices.columns]
+
+        prices["total_bid_depth"] = prices[bid_cols].fillna(0).sum(axis=1) if bid_cols else 0
+        prices["total_ask_depth"] = prices[ask_cols].fillna(0).sum(axis=1) if ask_cols else 0
+
+        if {"bid_volume_1", "ask_volume_1"}.issubset(prices.columns):
+            denom_l1 = prices["bid_volume_1"].fillna(0) + prices["ask_volume_1"].fillna(0)
+            denom_l1 = denom_l1.replace(0, pd.NA)
+            prices["imbalance_l1"] = (
+                (prices["bid_volume_1"].fillna(0) - prices["ask_volume_1"].fillna(0)) / denom_l1
+            )
+        else:
+            prices["imbalance_l1"] = pd.NA
+
+        denom_top3 = prices["total_bid_depth"].fillna(0) + prices["total_ask_depth"].fillna(0)
+        denom_top3 = denom_top3.replace(0, pd.NA)
+        prices["imbalance_top3"] = (
+            (prices["total_bid_depth"].fillna(0) - prices["total_ask_depth"].fillna(0)) / denom_top3
+        )
+
+        if "mid_price" in prices.columns and prices["mid_price"].notna().any():
+            prices["mid_return"] = prices["mid_price"].pct_change(fill_method=None)
+            prices["rolling_vol"] = prices["mid_return"].rolling(window).std()
+            prices["fwd_mid_return_1"] = prices["mid_price"].shift(-1) / prices["mid_price"] - 1
+            prices["fwd_mid_return_5"] = prices["mid_price"].shift(-5) / prices["mid_price"] - 1
+        else:
+            prices["mid_return"] = pd.NA
+            prices["rolling_vol"] = pd.NA
+            prices["fwd_mid_return_1"] = pd.NA
+            prices["fwd_mid_return_5"] = pd.NA
+
+    if not trades.empty:
+        trades = infer_trade_side(prices, trades)
+
+    return prices, trades
+
+
+def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, compare_days: bool = False) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty:
+        sort_cols = [c for c in ["day", "timestamp"] if c in prices_df.columns]
+        if sort_cols:
+            prices_df = prices_df.sort_values(sort_cols).copy()
+
+        for col in ["bid_price_1", "ask_price_1", "mid_price"]:
+            if col in prices_df.columns:
+                prices_df[col] = pd.to_numeric(prices_df[col], errors="coerce")
+                prices_df.loc[prices_df[col] <= 0, col] = np.nan
+
+        if compare_days and "day" in prices_df.columns:
+            for day, day_df in prices_df.groupby("day"):
+                bid_df = day_df[day_df["bid_price_1"].notna()] if "bid_price_1" in day_df.columns else pd.DataFrame()
+                ask_df = day_df[day_df["ask_price_1"].notna()] if "ask_price_1" in day_df.columns else pd.DataFrame()
+                mid_df = day_df[day_df["mid_price"].notna()] if "mid_price" in day_df.columns else pd.DataFrame()
+
+                if not bid_df.empty:
+                    fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name=f"Bid 1 (day {day})"))
+                if not ask_df.empty:
+                    fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name=f"Ask 1 (day {day})"))
+                if not mid_df.empty:
+                    fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name=f"Mid Price (day {day})"))
+        else:
+            bid_df = prices_df[prices_df["bid_price_1"].notna()] if "bid_price_1" in prices_df.columns else pd.DataFrame()
+            ask_df = prices_df[prices_df["ask_price_1"].notna()] if "ask_price_1" in prices_df.columns else pd.DataFrame()
+            mid_df = prices_df[prices_df["mid_price"].notna()] if "mid_price" in prices_df.columns else pd.DataFrame()
+
+            if not bid_df.empty:
+                fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name="Bid 1"))
+            if not ask_df.empty:
+                fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name="Ask 1"))
+            if not mid_df.empty:
+                fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name="Mid Price"))
+
+    if not trades_df.empty and not compare_days:
+        side_to_color = {"Buy": "green", "Sell": "red", "Unknown": "gray"}
+
+        for side, side_df in trades_df.groupby("side"):
+            sizes = side_df["quantity"].fillna(0)
+            marker_sizes = np.clip(np.sqrt(sizes) * 2.5, 5, 18)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=side_df["timestamp"],
+                    y=side_df["price"],
+                    mode="markers",
+                    name=f"Trades - {side}",
+                    marker={
+                        "size": marker_sizes,
+                        "color": side_to_color.get(side, "gray"),
+                        "opacity": 0.72,
+                    },
+                    customdata=np.stack([side_df["quantity"]], axis=-1),
+                    hovertemplate="Timestamp=%{x}<br>Price=%{y}<br>Qty=%{customdata[0]}<br>Side="
+                    + side
+                    + "<extra></extra>",
+                )
+            )
+
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Price")
+    return _apply_common_layout(fig, "Top of Book + Trades", 460)
+
+def make_spread_figure(prices_df: pd.DataFrame, compare_days: bool = False) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty:
+        sort_cols = [c for c in ["day", "timestamp"] if c in prices_df.columns]
+        if sort_cols:
+            prices_df = prices_df.sort_values(sort_cols).copy()
+
+        if compare_days and "day" in prices_df.columns:
+            for day, day_df in prices_df.groupby("day"):
+                fig.add_trace(go.Scatter(x=day_df["timestamp"], y=day_df["spread"], mode="lines", name=f"Spread (day {day})"))
+        else:
+            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["spread"], mode="lines", name="Spread"))
+
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Spread")
+    return _apply_common_layout(fig, "Spread Over Time", 300)
+
+
+def make_depth_figure(prices_df: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12)
+
+    if not prices_df.empty:
+        prices_df = prices_df.sort_values("timestamp").copy()
+
+        if "bid_volume_1" in prices_df.columns:
+            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["bid_volume_1"], mode="lines", name="Bid Vol 1"), row=1, col=1)
+        if "ask_volume_1" in prices_df.columns:
+            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["ask_volume_1"], mode="lines", name="Ask Vol 1"), row=1, col=1)
+
+        if "total_bid_depth" in prices_df.columns:
+            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["total_bid_depth"], mode="lines", name="Total Bid Depth"), row=2, col=1)
+        if "total_ask_depth" in prices_df.columns:
+            fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["total_ask_depth"], mode="lines", name="Total Ask Depth"), row=2, col=1)
+
+    fig.update_layout(
+        title="Book Volumes and Total Depth",
+        template="plotly_white",
+        height=500,
+        hovermode="x unified",
+        legend={"orientation": "h"},
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Timestamp", row=2, col=1)
+    fig.update_yaxes(title_text="Level 1 Volume", row=1, col=1)
+    fig.update_yaxes(title_text="Total Depth", row=2, col=1)
+    return fig
+
+
+def make_trade_volume_figure(trades_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not trades_df.empty:
+        volume_df = trades_df.groupby(["timestamp", "side"], as_index=False)["quantity"].sum()
+
+        for side in ["Buy", "Sell", "Unknown"]:
+            side_df = volume_df[volume_df["side"] == side]
+            if not side_df.empty:
+                fig.add_trace(
+                    go.Bar(
+                        x=side_df["timestamp"],
+                        y=side_df["quantity"],
+                        name=f"{side} Volume",
+                    )
+                )
+
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Quantity")
+    return _apply_common_layout(fig, "Trade Volume by Side", 320)
+
+
+def make_imbalance_figure(prices_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty:
+        prices_df = prices_df.sort_values("timestamp").copy()
+
+        if "imbalance_l1" in prices_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=prices_df["timestamp"],
+                    y=prices_df["imbalance_l1"],
+                    mode="lines",
+                    name="L1 Imbalance",
+                )
+            )
+
+        if "imbalance_top3" in prices_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=prices_df["timestamp"],
+                    y=prices_df["imbalance_top3"],
+                    mode="lines",
+                    name="Top-3 Imbalance",
+                )
+            )
+
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Imbalance")
+    return _apply_common_layout(fig, "Book Imbalance", 320)
+
+
+def make_imbalance_histogram_figure(prices_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty and "imbalance_top3" in prices_df.columns:
+        fig.add_trace(
+            go.Histogram(
+                x=prices_df["imbalance_top3"].dropna(),
+                nbinsx=40,
+                name="Top-3 Imbalance",
+            )
+        )
+
+    fig.update_xaxes(title_text="Imbalance")
+    fig.update_yaxes(title_text="Count")
+    return _apply_common_layout(fig, "Imbalance Distribution", 320)
+
+
+def make_imbalance_forward_return_figure(prices_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty and {"imbalance_top3", "fwd_mid_return_1"}.issubset(prices_df.columns):
+        df = prices_df[["imbalance_top3", "fwd_mid_return_1"]].dropna().copy()
+        if not df.empty:
+            try:
+                df["bucket"] = pd.qcut(df["imbalance_top3"], q=10, duplicates="drop")
+                bucketed = df.groupby("bucket", observed=False)["fwd_mid_return_1"].mean().reset_index()
+
+                fig.add_trace(
+                    go.Bar(
+                        x=bucketed["bucket"].astype(str),
+                        y=bucketed["fwd_mid_return_1"],
+                        name="Avg next return",
+                    )
+                )
+            except ValueError:
+                pass
+
+    fig.update_xaxes(title_text="Imbalance Bucket")
+    fig.update_yaxes(title_text="Average Forward Return")
+    return _apply_common_layout(fig, "Forward Return by Imbalance", 340)
+
+
+def make_returns_volatility_figure(prices_df: pd.DataFrame, window: int = 25) -> go.Figure:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12)
+
+    if not prices_df.empty and "mid_return" in prices_df.columns:
+        prices_df = prices_df.sort_values("timestamp").copy()
+
+        fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["mid_return"], mode="lines", name="Mid Return"), row=1, col=1)
+        vol_name = f"Rolling Vol ({window})"
+        fig.add_trace(go.Scatter(x=prices_df["timestamp"], y=prices_df["rolling_vol"], mode="lines", name=vol_name), row=2, col=1)
+
+    fig.update_layout(
+        title="Midprice Returns and Rolling Volatility",
+        template="plotly_white",
+        height=500,
+        hovermode="x unified",
+        legend={"orientation": "h"},
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Timestamp", row=2, col=1)
+    fig.update_yaxes(title_text="Return", row=1, col=1)
+    fig.update_yaxes(title_text="Volatility", row=2, col=1)
+    return fig
+
+
+
+def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not prices_df.empty:
+        prices_df = prices_df.sort_values("timestamp").copy()
+
+        price_cols = [
+            ("bid_price_3", "bid_volume_3"),
+            ("bid_price_2", "bid_volume_2"),
+            ("bid_price_1", "bid_volume_1"),
+            ("ask_price_1", "ask_volume_1"),
+            ("ask_price_2", "ask_volume_2"),
+            ("ask_price_3", "ask_volume_3"),
+        ]
+
+        records = []
+        for _, row in prices_df.iterrows():
+            ts = row["timestamp"]
+            for pcol, vcol in price_cols:
+                price = row.get(pcol)
+                vol = row.get(vcol)
+                if pd.notna(price) and pd.notna(vol) and float(price) > 0:
+                    records.append((ts, price, vol))
+
+        if records:
+            heat_df = pd.DataFrame(records, columns=["timestamp", "price", "volume"])
+            pivot = heat_df.pivot_table(index="price", columns="timestamp", values="volume", aggfunc="sum", fill_value=0)
+
+            fig.add_trace(
+                go.Heatmap(
+                    x=pivot.columns,
+                    y=pivot.index,
+                    z=pivot.values,
+                    colorbar={"title": "Volume"},
+                )
+            )
+
+    fig.update_layout(
+        title="Book Heatmap",
+        template="plotly_white",
+        height=500,
+        hovermode="closest",
+        margin={"l": 50, "r": 20, "t": 60, "b": 50},
+    )
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Price Level")
+    return fig
+
+def make_trade_size_histogram_figure(trades_df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+
+    if not trades_df.empty and "quantity" in trades_df.columns:
+        fig.add_trace(
+            go.Histogram(
+                x=trades_df["quantity"].dropna(),
+                nbinsx=30,
+                name="Trade Size",
+            )
+        )
+
+    fig.update_xaxes(title_text="Quantity")
+    fig.update_yaxes(title_text="Count")
+    return _apply_common_layout(fig, "Trade Size Distribution", 320)
+
+
+
+def make_cross_product_figure(prices_df: pd.DataFrame, selected_product: str, compare_products: list[str]) -> go.Figure:
+    fig = go.Figure()
+
+    if prices_df.empty:
+        return _apply_common_layout(fig, "Cross-Product Midprice Comparison", 380)
+
+    compare_set = [selected_product] + [p for p in compare_products if p != selected_product]
+
+    for product in compare_set:
+        dfp = prices_df[prices_df["product"] == product].sort_values("timestamp").copy()
+        if dfp.empty:
+            continue
+        if "mid_price" in dfp.columns:
+            dfp["mid_price"] = pd.to_numeric(dfp["mid_price"], errors="coerce")
+            dfp.loc[dfp["mid_price"] <= 0, "mid_price"] = np.nan
+            dfp = dfp[dfp["mid_price"].notna()]
+            if not dfp.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=dfp["timestamp"],
+                        y=dfp["mid_price"],
+                        mode="lines",
+                        name=product,
+                    )
+                )
+
+    fig.update_xaxes(title_text="Timestamp")
+    fig.update_yaxes(title_text="Mid Price")
+    return _apply_common_layout(fig, "Cross-Product Midprice Comparison", 380)

@@ -119,18 +119,32 @@ def build_shared_market_controls_layout():
             html.Div(
                 [
                     html.Button(
-                        "Download Filtered Prices CSV",
+                        "Download Current Product Prices CSV",
                         id="download-prices-btn",
                         n_clicks=0,
                         style={"marginRight": "10px"},
                     ),
                     html.Button(
-                        "Download Filtered Trades CSV",
+                        "Download Current Product Trades CSV",
                         id="download-trades-btn",
                         n_clicks=0,
+                        style={"marginRight": "10px"},
+                    ),
+                    html.Button(
+                        "Download Current Product ZIP",
+                        id="download-product-data-btn",
+                        n_clicks=0,
+                        style={
+                            "fontWeight": "bold",
+                            "backgroundColor": "#eef6ff",
+                            "border": "1px solid #99c2ff",
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                        },
                     ),
                     dcc.Download(id="download-prices"),
                     dcc.Download(id="download-trades"),
+                    dcc.Download(id="download-product-data"),
                 ],
                 style={"marginBottom": "20px"},
             ),
@@ -544,11 +558,25 @@ def make_returns_volatility_figure(prices_df: pd.DataFrame, window: int = 25) ->
 
 
 
-def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
+
+def make_book_heatmap_figure(prices_df: pd.DataFrame, max_rows: int = 2500) -> go.Figure:
+    """
+    Faster bounded book heatmap.
+
+    Old version used iterrows over every selected row and could create a huge
+    price x timestamp pivot. This version:
+    - samples timestamps before building the heatmap
+    - uses vectorized concat instead of iterrows
+    - keeps the visual useful without freezing the browser
+    """
     fig = go.Figure()
 
     if not prices_df.empty:
-        prices_df = prices_df.sort_values("timestamp").copy()
+        df = prices_df.sort_values("timestamp").copy()
+
+        if len(df) > max_rows:
+            step = max(1, len(df) // max_rows)
+            df = df.iloc[::step].copy()
 
         price_cols = [
             ("bid_price_3", "bid_volume_3"),
@@ -559,18 +587,28 @@ def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
             ("ask_price_3", "ask_volume_3"),
         ]
 
-        records = []
-        for _, row in prices_df.iterrows():
-            ts = row["timestamp"]
-            for pcol, vcol in price_cols:
-                price = row.get(pcol)
-                vol = row.get(vcol)
-                if pd.notna(price) and pd.notna(vol) and float(price) > 0:
-                    records.append((ts, price, vol))
+        frames = []
+        for pcol, vcol in price_cols:
+            if pcol not in df.columns or vcol not in df.columns:
+                continue
 
-        if records:
-            heat_df = pd.DataFrame(records, columns=["timestamp", "price", "volume"])
-            pivot = heat_df.pivot_table(index="price", columns="timestamp", values="volume", aggfunc="sum", fill_value=0)
+            tmp = df[["timestamp", pcol, vcol]].rename(
+                columns={pcol: "price", vcol: "volume"}
+            )
+            tmp = tmp.dropna(subset=["timestamp", "price", "volume"])
+            tmp = tmp[(tmp["price"] > 0) & (tmp["volume"] != 0)]
+            if not tmp.empty:
+                frames.append(tmp)
+
+        if frames:
+            heat_df = pd.concat(frames, ignore_index=True)
+            pivot = heat_df.pivot_table(
+                index="price",
+                columns="timestamp",
+                values="volume",
+                aggfunc="sum",
+                fill_value=0,
+            )
 
             fig.add_trace(
                 go.Heatmap(
@@ -582,7 +620,7 @@ def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
             )
 
     fig.update_layout(
-        title="Book Heatmap",
+        title=f"Book Heatmap (sampled to max {max_rows:,} timestamps)",
         template="plotly_white",
         height=500,
         hovermode="closest",
@@ -591,6 +629,7 @@ def make_book_heatmap_figure(prices_df: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Price Level")
     return fig
+
 
 def make_trade_size_histogram_figure(trades_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
