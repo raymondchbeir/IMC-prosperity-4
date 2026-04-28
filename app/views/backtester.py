@@ -17,6 +17,11 @@ from app.backtesting.runner import build_custom_data_root, parse_limit_overrides
 from app.config import DEFAULT_BACKTEST_PRESET, DEFAULT_LIMIT_OVERRIDES_TEXT, DEFAULT_MATCH_TRADES
 from app.models.schemas import BacktestRequest
 
+MAX_ACTIVITY_ROWS_FOR_UI = 40000
+MAX_SUBMISSION_ROWS_FOR_UI = 15000
+MAX_SANDBOX_ROWS_FOR_UI = 5000
+MAX_REALIZED_ROWS_FOR_UI = 15000
+
 
 def _build_custom_data_root_from_session_store(session_store: dict, tmpdir_path: Path) -> Path | None:
     if not session_store:
@@ -478,6 +483,10 @@ def register_backtester_callbacks(app):
                     html.Span(
                         f" Extra market access: {int(round(100 * float(payload.summary.get('extra_volume_pct', 0.0))))}%.",
                     ),
+                    html.Span(
+                        _format_timing_line(payload.summary.get("timings", {})),
+                        style={"display": "block", "marginTop": "6px", "fontSize": "13px", "color": "#4b5563"},
+                    ),
                 ],
                 style={
                     "padding": "10px 14px",
@@ -490,10 +499,10 @@ def register_backtester_callbacks(app):
             payload_data = {
                 "summary": payload.summary,
                 "targets": [target.label for target in payload.targets],
-                "activity_rows": payload.activity_rows,
-                "submission_trade_rows": payload.submission_trade_rows,
-                "realized_trade_rows": payload.realized_trade_rows,
-                "sandbox_rows": payload.sandbox_rows,
+                    "activity_rows": _downsample_activity_rows(payload.activity_rows, MAX_ACTIVITY_ROWS_FOR_UI),
+                    "submission_trade_rows": _limit_rows_for_ui(payload.submission_trade_rows, MAX_SUBMISSION_ROWS_FOR_UI),
+                    "realized_trade_rows": _limit_rows_for_ui(payload.realized_trade_rows, MAX_REALIZED_ROWS_FOR_UI),
+                    "sandbox_rows": _limit_rows_for_ui(payload.sandbox_rows, MAX_SANDBOX_ROWS_FOR_UI),
                 "per_run_rows": payload.per_run_rows,
                 "per_product_rows": payload.per_product_rows,
             }
@@ -1295,3 +1304,75 @@ def _fmt_pct(value) -> str:
     if not math.isfinite(value):
         return "N/A"
     return f"{value:.2f}%"
+
+
+def _format_timing_line(timings: dict) -> str:
+    if not isinstance(timings, dict) or not timings:
+        return ""
+
+    total = timings.get("total_seconds")
+    rust = timings.get("rust_seconds")
+    parse = timings.get("parse_seconds")
+    payload = timings.get("payload_seconds")
+
+    parts = []
+    if total is not None:
+        parts.append(f"Total: {float(total):.2f}s")
+    if rust is not None:
+        parts.append(f"Rust: {float(rust):.2f}s")
+    if parse is not None:
+        parts.append(f"Parse: {float(parse):.2f}s")
+    if payload is not None:
+        parts.append(f"Payload: {float(payload):.2f}s")
+
+    if not parts:
+        return ""
+    return "Timing - " + ", ".join(parts)
+
+
+def _limit_rows_for_ui(rows: list[dict], max_rows: int) -> list[dict]:
+    if not rows or max_rows <= 0 or len(rows) <= max_rows:
+        return rows
+    return rows[:max_rows]
+
+
+def _downsample_activity_rows(rows: list[dict], max_rows: int) -> list[dict]:
+    if not rows or max_rows <= 0 or len(rows) <= max_rows:
+        return rows
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return rows[:max_rows]
+
+    if "run_label" not in df.columns:
+        df["run_label"] = "Run"
+    if "product" not in df.columns:
+        df["product"] = "UNKNOWN"
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
+    elif "global_step" in df.columns:
+        df["timestamp"] = pd.to_numeric(df["global_step"], errors="coerce")
+    else:
+        df["timestamp"] = np.arange(len(df))
+
+    out_parts: list[pd.DataFrame] = []
+    grouped = list(df.groupby(["run_label", "product"], sort=False))
+    budget_per_group = max(100, max_rows // max(1, len(grouped)))
+
+    for _, group in grouped:
+        group = group.sort_values("timestamp", kind="mergesort")
+        if len(group) <= budget_per_group:
+            out_parts.append(group)
+            continue
+
+        take = np.linspace(0, len(group) - 1, num=budget_per_group, dtype=int)
+        out_parts.append(group.iloc[take])
+
+    if not out_parts:
+        return rows[:max_rows]
+
+    sampled = pd.concat(out_parts, ignore_index=True)
+    sampled = sampled.sort_values(["run_label", "product", "timestamp"], kind="mergesort")
+    if len(sampled) > max_rows:
+        sampled = sampled.iloc[:max_rows]
+    return sampled.to_dict("records")

@@ -3,12 +3,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from app.config import RUST_BACKTESTER_BIN
+from app.config import (
+    RUST_BACKTESTER_ARTIFACT_MODE,
+    RUST_BACKTESTER_BIN,
+    RUST_BACKTESTER_PRODUCTS_MODE,
+)
 from app.models.schemas import BacktestPayload, BacktestRequest, BacktestTarget
 from app.portal_logs.parser import parse_portal_files
 
@@ -31,6 +36,7 @@ def run_rust_backtests(
             f"Could not find `{RUST_BACKTESTER_BIN}` on PATH. Run `cargo install rust_backtester --locked` and make sure ~/.cargo/bin is on PATH."
         )
 
+    run_start = time.perf_counter()
     with TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         output_root = tmpdir / "rust_runs"
@@ -48,8 +54,8 @@ def run_rust_backtests(
             "--dataset", str(dataset_path),
             "--output-root", str(output_root),
             "--persist",
-            "--artifact-mode", "full",
-            "--products", "full",
+            "--artifact-mode", RUST_BACKTESTER_ARTIFACT_MODE,
+            "--products", RUST_BACKTESTER_PRODUCTS_MODE,
         ]
 
         if request.selected_day is not None and request.preset in {"selected_dashboard_round_day", "manual"}:
@@ -61,7 +67,9 @@ def run_rust_backtests(
         repo_root = Path(__file__).resolve().parents[2]
         env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
 
+        rust_start = time.perf_counter()
         proc = subprocess.run(cmd, cwd=str(repo_root), env=env, text=True, capture_output=True)
+        rust_seconds = time.perf_counter() - rust_start
         if proc.returncode != 0:
             raise RuntimeError(
                 "rust_backtester failed.\n\nSTDOUT:\n"
@@ -71,7 +79,11 @@ def run_rust_backtests(
             )
 
         log_path = _find_best_log(output_root)
+        parse_start = time.perf_counter()
         portal_payload = parse_portal_files([log_path])
+        parse_seconds = time.perf_counter() - parse_start
+
+        payload_start = time.perf_counter()
         targets = _tokens_to_targets(request)
         per_run_rows = _build_per_run_rows(portal_payload.summary, targets)
 
@@ -81,6 +93,15 @@ def run_rust_backtests(
         summary["extra_volume_pct"] = float(request.extra_volume_pct or 0.0)
         summary["backend"] = "rust_backtester"
         summary["rust_log_path"] = str(log_path)
+        summary["artifact_mode"] = RUST_BACKTESTER_ARTIFACT_MODE
+        summary["products_mode"] = RUST_BACKTESTER_PRODUCTS_MODE
+        summary["timings"] = {
+            "rust_seconds": round(rust_seconds, 3),
+            "parse_seconds": round(parse_seconds, 3),
+            "payload_seconds": round(time.perf_counter() - payload_start, 3),
+            "total_seconds": round(time.perf_counter() - run_start, 3),
+        }
+        print("RUST_BACKTEST_TIMINGS", summary["timings"])
 
         return BacktestPayload(
             targets=targets,

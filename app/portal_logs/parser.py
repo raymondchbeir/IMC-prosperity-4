@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.config import BACKTEST_ACTIVITY_PARSE_MAX_ROWS
+
 
 @dataclass
 class PortalLogPayload:
@@ -104,7 +106,8 @@ def _clean_dict(data: dict[str, Any]) -> dict[str, Any]:
 def _parse_activities_log(raw: str | None) -> pd.DataFrame:
     if not raw:
         return pd.DataFrame(columns=PRICE_COLS)
-    df = pd.read_csv(StringIO(raw), sep=";")
+    sampled_raw = _sample_activities_csv_text(raw, BACKTEST_ACTIVITY_PARSE_MAX_ROWS)
+    df = pd.read_csv(StringIO(sampled_raw), sep=";")
     df.columns = [str(c).strip() for c in df.columns]
     if "profit_and_loss" in df.columns and "profit_loss" not in df.columns:
         df = df.rename(columns={"profit_and_loss": "profit_loss"})
@@ -134,6 +137,29 @@ def _parse_activities_log(raw: str | None) -> pd.DataFrame:
         bad_mid = df["mid_price"].isna() | (df["mid_price"] <= 0)
         df.loc[valid & bad_mid, "mid_price"] = (df.loc[valid & bad_mid, "bid_price_1"] + df.loc[valid & bad_mid, "ask_price_1"]) / 2.0
     return df.sort_values([c for c in ["day", "timestamp", "product"] if c in df.columns]).reset_index(drop=True)
+
+
+def _sample_activities_csv_text(raw: str, max_rows: int) -> str:
+    """Keep activities parsing bounded for very large backtests.
+
+    The backtester can emit very large `activitiesLog` payloads. Sampling rows before
+    `read_csv` avoids expensive parsing + DataFrame operations that can stall the UI.
+    """
+    if not raw or max_rows <= 0:
+        return raw
+
+    lines = raw.splitlines()
+    if len(lines) <= 1:
+        return raw
+
+    header = lines[0]
+    data_lines = lines[1:]
+    if len(data_lines) <= max_rows:
+        return raw
+
+    keep_idx = np.linspace(0, len(data_lines) - 1, num=max_rows, dtype=int)
+    sampled = [data_lines[i] for i in keep_idx]
+    return "\n".join([header, *sampled])
 
 
 def _parse_trade_history(raw: Any) -> pd.DataFrame:
