@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import base64
+import io
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pandas as pd
+
+from app.cache import get_session_frames, store_session
 from dash import Input, Output, State, dcc, html, no_update, ctx
 from dash.exceptions import PreventUpdate
 
@@ -215,16 +219,15 @@ def register_upload_callbacks(app):
                     else html.Div("No round-specific plugin registered for the uploaded rounds.")
                 )
 
+                session_id = store_session(session.prices_df, session.trades_df)
+
                 store_data = {
-                    "prices": session.prices_df.to_dict("records")
-                    if not session.prices_df.empty
-                    else [],
-                    "trades": session.trades_df.to_dict("records")
-                    if not session.trades_df.empty
-                    else [],
+                    "session_id": session_id,
                     "available_rounds": session.available_rounds,
                     "available_days": session.available_days,
                     "available_products": session.available_products,
+                    "price_rows": int(len(session.prices_df)),
+                    "trade_rows": int(len(session.trades_df)),
                 }
 
                 return (
@@ -275,8 +278,7 @@ def register_upload_callbacks(app):
         if not store_data or not selected_product:
             return [], None
 
-        prices_df = pd.DataFrame(store_data.get("prices", []))
-        trades_df = pd.DataFrame(store_data.get("trades", []))
+        prices_df, trades_df = _frames_from_store(store_data)
 
         rounds = sorted(
             set(
@@ -320,8 +322,7 @@ def register_upload_callbacks(app):
 
         compare_days = "compare_days" in (compare_days_value or [])
 
-        prices_df = pd.DataFrame(store_data.get("prices", []))
-        trades_df = pd.DataFrame(store_data.get("trades", []))
+        prices_df, trades_df = _frames_from_store(store_data)
 
         price_days = []
         trade_days = []
@@ -695,7 +696,18 @@ def register_upload_callbacks(app):
         if prices_df.empty:
             raise PreventUpdate
 
-        return dcc.send_data_frame(prices_df.to_csv, "filtered_prices.csv", index=False)
+        suffix = _selection_filename_suffix(
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            timestamp_range,
+        )
+        return dcc.send_data_frame(
+            prices_df.to_csv,
+            f"prices_{suffix}.csv",
+            index=False,
+        )
 
     @app.callback(
         Output("download-trades", "data"),
@@ -735,12 +747,145 @@ def register_upload_callbacks(app):
         if trades_df.empty:
             raise PreventUpdate
 
-        return dcc.send_data_frame(trades_df.to_csv, "filtered_trades.csv", index=False)
+        suffix = _selection_filename_suffix(
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            timestamp_range,
+        )
+        return dcc.send_data_frame(
+            trades_df.to_csv,
+            f"trades_{suffix}.csv",
+            index=False,
+        )
+
+
+    @app.callback(
+        Output("download-product-data", "data"),
+        Input("download-product-data-btn", "n_clicks"),
+        State("session-data-store", "data"),
+        State("product-dropdown", "value"),
+        State("round-dropdown", "value"),
+        State("day-dropdown", "value"),
+        State("compare-days-toggle", "value"),
+        State("compare-product-dropdown", "value"),
+        State("timestamp-range-slider", "value"),
+        prevent_initial_call=True,
+    )
+    def download_current_product_zip(
+        n_clicks,
+        store_data,
+        selected_product,
+        selected_round,
+        selected_day,
+        compare_days_value,
+        compare_products,
+        timestamp_range,
+    ):
+        if not n_clicks or not store_data or not selected_product:
+            raise PreventUpdate
+
+        prices_df, trades_df, _, _ = filter_selected_data(
+            store_data,
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            compare_products,
+            timestamp_range,
+        )
+
+        if prices_df.empty and trades_df.empty:
+            raise PreventUpdate
+
+        suffix = _selection_filename_suffix(
+            selected_product,
+            selected_round,
+            selected_day,
+            compare_days_value,
+            timestamp_range,
+        )
+
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if not prices_df.empty:
+                zf.writestr(
+                    f"prices_{suffix}.csv",
+                    prices_df.to_csv(index=False),
+                )
+
+            if not trades_df.empty:
+                zf.writestr(
+                    f"trades_{suffix}.csv",
+                    trades_df.to_csv(index=False),
+                )
+
+        zip_buffer.seek(0)
+
+        return dcc.send_bytes(
+            zip_buffer.getvalue(),
+            f"current_product_data_{suffix}.zip",
+        )
 
     register_backtester_callbacks(app)
     register_research_callbacks(app)
     register_market_microstructure_callbacks(app)
     register_options_stats_callbacks(app)
+
+
+
+def _safe_filename_part(value) -> str:
+    text = str(value) if value is not None else "none"
+    return "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in text)
+
+
+def _selection_filename_suffix(
+    selected_product,
+    selected_round,
+    selected_day,
+    compare_days_value,
+    timestamp_range,
+) -> str:
+    product = _safe_filename_part(selected_product or "product")
+    round_part = f"round{selected_round}" if selected_round is not None else "round_all"
+
+    compare_days = "compare_days" in (compare_days_value or [])
+    if compare_days:
+        day_part = "all_days"
+    else:
+        day_part = f"day{selected_day}" if selected_day is not None else "day_all"
+
+    if timestamp_range and len(timestamp_range) == 2:
+        t0, t1 = timestamp_range
+        time_part = f"t{int(t0)}_{int(t1)}"
+    else:
+        time_part = "all_times"
+
+    return f"{product}_{round_part}_{day_part}_{time_part}"
+
+
+
+def _frames_from_store(store_data):
+    """
+    Return prices/trades from server-side cache.
+
+    Backward-compatible fallback:
+    if old browser JSON store data exists, still read it.
+    """
+    if not store_data:
+        return pd.DataFrame(), pd.DataFrame()
+
+    session_id = store_data.get("session_id")
+    if session_id:
+        prices_df, trades_df = get_session_frames(session_id)
+        return prices_df, trades_df
+
+    return (
+        pd.DataFrame(store_data.get("prices", [])),
+        pd.DataFrame(store_data.get("trades", [])),
+    )
 
 
 def filter_selected_data(
@@ -755,8 +900,7 @@ def filter_selected_data(
     compare_days = "compare_days" in (compare_days_value or [])
     compare_products = compare_products or []
 
-    prices_df = pd.DataFrame(store_data.get("prices", []))
-    trades_df = pd.DataFrame(store_data.get("trades", []))
+    prices_df, trades_df = _frames_from_store(store_data)
     all_prices_df = prices_df.copy()
 
     if not prices_df.empty:

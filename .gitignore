@@ -34,3 +34,26 @@ data/sample/*.csv
 
 # OS / misc
 Thumbs.db
+
+# Ignore generated CSV data
+*.csv
+
+# IMC generated data / analysis outputs
+data/
+tools/prosperity_rust_backtester/datasets/
+*.csv
+*.log
+*.json
+
+# Generated data / outputs
+data/
+runs/
+*.csv
+*.log
+*.json
+*.bak
+*.perf.bak
+.DS_Store
+
+# Backtester datasets
+tools/prosperity_rust_backtester/datasets/
