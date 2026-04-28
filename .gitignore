@@ -58,3 +58,4 @@ runs/
 # Backtester datasets
 tools/prosperity_rust_backtester/datasets/
 .DS_Store
+.DS_Store
