@@ -431,7 +431,14 @@ def register_upload_callbacks(app):
         cross_df, _ = enrich_market_data(cross_df, pd.DataFrame())
 
         return (
-            make_price_book_figure(prices_df, trades_df, compare_days=compare_days),
+            make_price_book_figure(
+                prices_df,
+                trades_df,
+                compare_days=compare_days,
+                cross_prices_df=cross_df,
+                selected_product=selected_product,
+                compare_products=compare_products or [],
+            ),
             make_spread_figure(prices_df, compare_days=compare_days),
             make_depth_figure(prices_df),
             make_trade_volume_figure(trades_df),
@@ -508,6 +515,7 @@ def register_upload_callbacks(app):
         Input("compare-days-toggle", "value"),
         Input("compare-product-dropdown", "value"),
         Input("timestamp-range-slider", "value"),
+        Input("analysis-tabs", "value"),
         prevent_initial_call=True,
     )
     def update_nancy_pelosi_identifier(
@@ -518,22 +526,47 @@ def register_upload_callbacks(app):
         compare_days_value,
         compare_products,
         timestamp_range,
+        active_tab,
     ):
+        if active_tab != "nancy-pelosi-identifier":
+            raise PreventUpdate
+
         if not store_data or selected_round is None or not selected_product:
             return html.Div(), {}, {}, {}, html.Div(), [], [], ""
 
-        prices_df, trades_df, _, _ = filter_selected_data(
-            store_data,
-            selected_product,
-            selected_round,
-            selected_day,
-            compare_days_value,
-            compare_products,
-            timestamp_range,
-        )
-        prices_df, trades_df = enrich_market_data(prices_df, trades_df)
+        try:
+            prices_df, trades_df, _, _ = filter_selected_data(
+                store_data,
+                selected_product,
+                selected_round,
+                selected_day,
+                compare_days_value,
+                compare_products,
+                timestamp_range,
+            )
+            prices_df, trades_df = enrich_market_data(prices_df, trades_df)
 
-        return build_nancy_pelosi_identifier_components(prices_df, trades_df)
+            return build_nancy_pelosi_identifier_components(prices_df, trades_df)
+
+        except Exception as e:
+            err = html.Div(
+                [
+                    html.Strong("Nancy analysis failed for this selection."),
+                    html.Div(str(e), style={"marginTop": "6px", "fontFamily": "monospace"}),
+                    html.Div(
+                        "The rest of the dashboard is still usable. Try selecting only one product/day or switch to the Nancy tab to debug.",
+                        style={"marginTop": "6px"},
+                    ),
+                ],
+                style={
+                    "padding": "10px 14px",
+                    "borderRadius": "10px",
+                    "backgroundColor": "#fff1f0",
+                    "border": "1px solid #ffccc7",
+                    "color": "#a8071a",
+                },
+            )
+            return err, {}, {}, {}, html.Div(), [], [], "Nancy callback error was caught safely."
 
     @app.callback(
         Output("nancy-extra-events-store", "data"),
@@ -618,6 +651,7 @@ def register_upload_callbacks(app):
         Input("timestamp-range-slider", "value"),
         Input("nancy-flagged-grid", "selectedRows"),
         Input("nancy-extra-events-store", "data"),
+        Input("analysis-tabs", "value"),
         prevent_initial_call=True,
     )
     def update_selected_nancy_events(
@@ -630,7 +664,11 @@ def register_upload_callbacks(app):
         timestamp_range,
         selected_rows,
         extra_rows,
+        active_tab,
     ):
+        if active_tab != "nancy-pelosi-identifier":
+            raise PreventUpdate
+
         if not store_data or selected_round is None or not selected_product:
             return {}
 
@@ -888,6 +926,7 @@ def _frames_from_store(store_data):
     )
 
 
+
 def filter_selected_data(
     store_data,
     selected_product,
@@ -900,56 +939,98 @@ def filter_selected_data(
     compare_days = "compare_days" in (compare_days_value or [])
     compare_products = compare_products or []
 
-    prices_df, trades_df = _frames_from_store(store_data)
+    # Support both old browser-json store and new server-side session cache.
+    if "_frames_from_store" in globals():
+        prices_df, trades_df = _frames_from_store(store_data)
+    else:
+        prices_df = pd.DataFrame((store_data or {}).get("prices", []))
+        trades_df = pd.DataFrame((store_data or {}).get("trades", []))
+
+    prices_df = prices_df.copy()
+    trades_df = trades_df.copy()
+
+    # Normalize product column.
+    if not prices_df.empty and "product" not in prices_df.columns and "symbol" in prices_df.columns:
+        prices_df = prices_df.rename(columns={"symbol": "product"})
+
+    if not trades_df.empty and "product" not in trades_df.columns and "symbol" in trades_df.columns:
+        trades_df = trades_df.rename(columns={"symbol": "product"})
+
+    # Add round column if missing, useful for ROUND_5 raw files.
+    if not prices_df.empty and "round" not in prices_df.columns:
+        prices_df["round"] = selected_round
+
+    if not trades_df.empty and "round" not in trades_df.columns:
+        trades_df["round"] = selected_round
+
     all_prices_df = prices_df.copy()
 
-    if not prices_df.empty:
-        prices_df = prices_df[
-            (prices_df["product"] == selected_product)
-            & (prices_df["round"] == selected_round)
-        ]
-        if not compare_days and selected_day is not None:
-            prices_df = prices_df[prices_df["day"] == selected_day]
+    # -----------------------------
+    # Main selected product data
+    # -----------------------------
+    if not prices_df.empty and "product" in prices_df.columns:
+        mask = prices_df["product"].astype(str).eq(str(selected_product))
 
-    if not trades_df.empty:
-        trades_df = trades_df[
-            (trades_df["product"] == selected_product)
-            & (trades_df["round"] == selected_round)
-        ]
-        if not compare_days and selected_day is not None:
-            trades_df = trades_df[trades_df["day"] == selected_day]
-        elif compare_days:
-            pass
+        if selected_round is not None and "round" in prices_df.columns:
+            mask &= pd.to_numeric(prices_df["round"], errors="coerce").eq(selected_round)
 
+        prices_df = prices_df.loc[mask].copy()
+
+        if not compare_days and selected_day is not None and "day" in prices_df.columns:
+            prices_df = prices_df[pd.to_numeric(prices_df["day"], errors="coerce").eq(selected_day)]
+
+    if not trades_df.empty and "product" in trades_df.columns:
+        mask = trades_df["product"].astype(str).eq(str(selected_product))
+
+        if selected_round is not None and "round" in trades_df.columns:
+            mask &= pd.to_numeric(trades_df["round"], errors="coerce").eq(selected_round)
+
+        trades_df = trades_df.loc[mask].copy()
+
+        if not compare_days and selected_day is not None and "day" in trades_df.columns:
+            trades_df = trades_df[pd.to_numeric(trades_df["day"], errors="coerce").eq(selected_day)]
+
+    # -----------------------------
+    # Time filter for selected data
+    # -----------------------------
     if timestamp_range and len(timestamp_range) == 2:
         t0, t1 = timestamp_range
 
-        if not prices_df.empty:
-            prices_df = prices_df[
-                (prices_df["timestamp"] >= t0) & (prices_df["timestamp"] <= t1)
-            ]
+        if not prices_df.empty and "timestamp" in prices_df.columns:
+            ts = pd.to_numeric(prices_df["timestamp"], errors="coerce")
+            prices_df = prices_df[(ts >= t0) & (ts <= t1)]
 
-        if not trades_df.empty:
-            trades_df = trades_df[
-                (trades_df["timestamp"] >= t0) & (trades_df["timestamp"] <= t1)
-            ]
+        if not trades_df.empty and "timestamp" in trades_df.columns:
+            ts = pd.to_numeric(trades_df["timestamp"], errors="coerce")
+            trades_df = trades_df[(ts >= t0) & (ts <= t1)]
 
+    # -----------------------------
+    # Cross-product compare data
+    # -----------------------------
     cross_df = pd.DataFrame()
-    if not all_prices_df.empty:
-        compare_set = [selected_product] + [p for p in compare_products if p != selected_product]
-        cross_df = all_prices_df[
-            (all_prices_df["product"].isin(compare_set))
-            & (all_prices_df["round"] == selected_round)
+
+    if not all_prices_df.empty and "product" in all_prices_df.columns:
+        compare_set = [selected_product] + [
+            p for p in compare_products
+            if p and str(p) != str(selected_product)
         ]
 
-        if not compare_days and selected_day is not None:
-            cross_df = cross_df[cross_df["day"] == selected_day]
+        compare_set = [str(p) for p in compare_set]
 
-        if timestamp_range and len(timestamp_range) == 2:
+        cross_mask = all_prices_df["product"].astype(str).isin(compare_set)
+
+        if selected_round is not None and "round" in all_prices_df.columns:
+            cross_mask &= pd.to_numeric(all_prices_df["round"], errors="coerce").eq(selected_round)
+
+        cross_df = all_prices_df.loc[cross_mask].copy()
+
+        if not compare_days and selected_day is not None and "day" in cross_df.columns:
+            cross_df = cross_df[pd.to_numeric(cross_df["day"], errors="coerce").eq(selected_day)]
+
+        if timestamp_range and len(timestamp_range) == 2 and "timestamp" in cross_df.columns:
             t0, t1 = timestamp_range
-            cross_df = cross_df[
-                (cross_df["timestamp"] >= t0) & (cross_df["timestamp"] <= t1)
-            ]
+            ts = pd.to_numeric(cross_df["timestamp"], errors="coerce")
+            cross_df = cross_df[(ts >= t0) & (ts <= t1)]
 
     return prices_df, trades_df, cross_df, compare_days
 

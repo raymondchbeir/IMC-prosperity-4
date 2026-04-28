@@ -323,19 +323,43 @@ def enrich_market_data(
     return prices, trades
 
 
-def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, compare_days: bool = False) -> go.Figure:
+
+def make_price_book_figure(
+    prices_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    compare_days: bool = False,
+    cross_prices_df: pd.DataFrame | None = None,
+    selected_product: str | None = None,
+    compare_products: list[str] | None = None,
+) -> go.Figure:
     fig = go.Figure()
 
-    if not prices_df.empty:
-        sort_cols = [c for c in ["day", "timestamp"] if c in prices_df.columns]
+    def _clean_price_df(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        out = df.copy()
+
+        if "product" not in out.columns and "symbol" in out.columns:
+            out = out.rename(columns={"symbol": "product"})
+
+        sort_cols = [c for c in ["day", "timestamp"] if c in out.columns]
         if sort_cols:
-            prices_df = prices_df.sort_values(sort_cols).copy()
+            out = out.sort_values(sort_cols).copy()
 
         for col in ["bid_price_1", "ask_price_1", "mid_price"]:
-            if col in prices_df.columns:
-                prices_df[col] = pd.to_numeric(prices_df[col], errors="coerce")
-                prices_df.loc[prices_df[col] <= 0, col] = np.nan
+            if col in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce")
+                out.loc[out[col] <= 0, col] = np.nan
 
+        return out
+
+    prices_df = _clean_price_df(prices_df)
+
+    # ------------------------------------------------------------
+    # Main selected product traces
+    # ------------------------------------------------------------
+    if not prices_df.empty:
         if compare_days and "day" in prices_df.columns:
             for day, day_df in prices_df.groupby("day"):
                 bid_df = day_df[day_df["bid_price_1"].notna()] if "bid_price_1" in day_df.columns else pd.DataFrame()
@@ -343,27 +367,157 @@ def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, com
                 mid_df = day_df[day_df["mid_price"].notna()] if "mid_price" in day_df.columns else pd.DataFrame()
 
                 if not bid_df.empty:
-                    fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name=f"Bid 1 (day {day})"))
+                    fig.add_trace(
+                        go.Scatter(
+                            x=bid_df["timestamp"],
+                            y=bid_df["bid_price_1"],
+                            mode="lines",
+                            name=f"{selected_product or 'Selected'} Bid 1 (day {day})",
+                            line={"width": 1.2},
+                        )
+                    )
                 if not ask_df.empty:
-                    fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name=f"Ask 1 (day {day})"))
+                    fig.add_trace(
+                        go.Scatter(
+                            x=ask_df["timestamp"],
+                            y=ask_df["ask_price_1"],
+                            mode="lines",
+                            name=f"{selected_product or 'Selected'} Ask 1 (day {day})",
+                            line={"width": 1.2},
+                        )
+                    )
                 if not mid_df.empty:
-                    fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name=f"Mid Price (day {day})"))
+                    fig.add_trace(
+                        go.Scatter(
+                            x=mid_df["timestamp"],
+                            y=mid_df["mid_price"],
+                            mode="lines",
+                            name=f"{selected_product or 'Selected'} Mid (day {day})",
+                            line={"width": 2.4},
+                        )
+                    )
         else:
             bid_df = prices_df[prices_df["bid_price_1"].notna()] if "bid_price_1" in prices_df.columns else pd.DataFrame()
             ask_df = prices_df[prices_df["ask_price_1"].notna()] if "ask_price_1" in prices_df.columns else pd.DataFrame()
             mid_df = prices_df[prices_df["mid_price"].notna()] if "mid_price" in prices_df.columns else pd.DataFrame()
 
-            if not bid_df.empty:
-                fig.add_trace(go.Scatter(x=bid_df["timestamp"], y=bid_df["bid_price_1"], mode="lines", name="Bid 1"))
-            if not ask_df.empty:
-                fig.add_trace(go.Scatter(x=ask_df["timestamp"], y=ask_df["ask_price_1"], mode="lines", name="Ask 1"))
-            if not mid_df.empty:
-                fig.add_trace(go.Scatter(x=mid_df["timestamp"], y=mid_df["mid_price"], mode="lines", name="Mid Price"))
+            label = selected_product or "Selected"
 
+            if not bid_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=bid_df["timestamp"],
+                        y=bid_df["bid_price_1"],
+                        mode="lines",
+                        name=f"{label} Bid 1",
+                        line={"width": 1.2},
+                    )
+                )
+            if not ask_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=ask_df["timestamp"],
+                        y=ask_df["ask_price_1"],
+                        mode="lines",
+                        name=f"{label} Ask 1",
+                        line={"width": 1.2},
+                    )
+                )
+            if not mid_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=mid_df["timestamp"],
+                        y=mid_df["mid_price"],
+                        mode="lines",
+                        name=f"{label} Mid",
+                        line={"width": 2.8},
+                    )
+                )
+
+    # ------------------------------------------------------------
+    # Overlay compare products on the SAME price-book graph
+    # ------------------------------------------------------------
+    compare_products = compare_products or []
+    cross_prices_df = _clean_price_df(cross_prices_df) if cross_prices_df is not None else pd.DataFrame()
+
+    if not cross_prices_df.empty and "product" in cross_prices_df.columns:
+        overlay_products = [
+            p for p in compare_products
+            if p and str(p) != str(selected_product)
+        ]
+
+        # Limit visual chaos; dropdown can still hold more, but graph stays readable.
+        overlay_products = overlay_products[:4]
+
+        for product in overlay_products:
+            dfp = cross_prices_df[cross_prices_df["product"].astype(str).eq(str(product))].copy()
+            if dfp.empty:
+                continue
+
+            if "timestamp" not in dfp.columns:
+                continue
+
+            # Main mid line for compare product.
+            if "mid_price" in dfp.columns:
+                mid_df = dfp[dfp["mid_price"].notna()]
+                if not mid_df.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=mid_df["timestamp"],
+                            y=mid_df["mid_price"],
+                            mode="lines",
+                            name=f"{product} Mid",
+                            line={"width": 2.1, "dash": "solid"},
+                            opacity=0.85,
+                        )
+                    )
+
+            # Bid/ask envelope for compare product.
+            if "bid_price_1" in dfp.columns:
+                bid_df = dfp[dfp["bid_price_1"].notna()]
+                if not bid_df.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=bid_df["timestamp"],
+                            y=bid_df["bid_price_1"],
+                            mode="lines",
+                            name=f"{product} Bid 1",
+                            line={"width": 1.0, "dash": "dot"},
+                            opacity=0.55,
+                        )
+                    )
+
+            if "ask_price_1" in dfp.columns:
+                ask_df = dfp[dfp["ask_price_1"].notna()]
+                if not ask_df.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=ask_df["timestamp"],
+                            y=ask_df["ask_price_1"],
+                            mode="lines",
+                            name=f"{product} Ask 1",
+                            line={"width": 1.0, "dash": "dot"},
+                            opacity=0.55,
+                        )
+                    )
+
+    # ------------------------------------------------------------
+    # Trades only for selected product, not compare products.
+    # ------------------------------------------------------------
     if not trades_df.empty and not compare_days:
         side_to_color = {"Buy": "green", "Sell": "red", "Unknown": "gray"}
 
-        for side, side_df in trades_df.groupby("side"):
+        if "side" in trades_df.columns:
+            grouped = trades_df.groupby("side")
+        else:
+            trades_df = trades_df.copy()
+            trades_df["side"] = "Unknown"
+            grouped = trades_df.groupby("side")
+
+        for side, side_df in grouped:
+            if "quantity" not in side_df.columns or "price" not in side_df.columns:
+                continue
+
             sizes = side_df["quantity"].fillna(0)
             marker_sizes = np.clip(np.sqrt(sizes) * 2.5, 5, 18)
 
@@ -372,7 +526,7 @@ def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, com
                     x=side_df["timestamp"],
                     y=side_df["price"],
                     mode="markers",
-                    name=f"Trades - {side}",
+                    name=f"{selected_product or 'Selected'} Trades - {side}",
                     marker={
                         "size": marker_sizes,
                         "color": side_to_color.get(side, "gray"),
@@ -380,14 +534,15 @@ def make_price_book_figure(prices_df: pd.DataFrame, trades_df: pd.DataFrame, com
                     },
                     customdata=np.stack([side_df["quantity"]], axis=-1),
                     hovertemplate="Timestamp=%{x}<br>Price=%{y}<br>Qty=%{customdata[0]}<br>Side="
-                    + side
+                    + str(side)
                     + "<extra></extra>",
                 )
             )
 
     fig.update_xaxes(title_text="Timestamp")
     fig.update_yaxes(title_text="Price")
-    return _apply_common_layout(fig, "Top of Book + Trades", 460)
+    return _apply_common_layout(fig, "Top of Book + Cross-Product Overlay", 540)
+
 
 def make_spread_figure(prices_df: pd.DataFrame, compare_days: bool = False) -> go.Figure:
     fig = go.Figure()
